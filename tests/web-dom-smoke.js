@@ -625,36 +625,57 @@ check('步骤状态跟着安装状态走', cl.indexOf('该你了') >= 0 || cl.in
   const restoreCount = (hs.match(/data-restore="/g) || []).length;
   console.log('  （本机有 ' + restoreCount + ' 条会话记录）');
 
-  // --- 启动：六个工具各自的命令，以及"点下去会弹什么" ---
+  // --- 启动：装了才给启动按钮，以及"点下去会弹什么" ---
+  // 这一段以前写死"opencode 已装"。在干净的机器上（CI runner、新电脑）它必然假失败，
+  // 而且后面 wait('启动确认框弹出') 等不到就抛异常、把整套冒烟带崩 —— 失败的就不再
+  // 是"启动有没有问题"，而是"这台机器装没装"。改成先问接口，再按真实状态断言：
+  // 装了验"能给可点的按钮并能拉起确认框"，没装验"为什么不给点"。
   console.log('启动区');
   setHash('#/tool/opencode');
   await wait('opencode 工具页（启动）', () => el('app').innerHTML.indexOf('怎么启动、怎么用') >= 0);
   const lz = el('app').innerHTML;
   check('工具页有启动区（分段式：③ 启动）', /③[^<]*<\/span>启动/.test(lz) || lz.indexOf('<h2>启动</h2>') >= 0);
-  check('已装工具给可用的启动按钮', /data-launch="opencode"[^>]*data-mode="interactive"/.test(lz));
+  if (apiOp.installed) {
+    check('已装工具给可用的启动按钮', /data-launch="opencode"[^>]*data-mode="interactive"/.test(lz));
+  } else {
+    check('没装的工具不给可点的启动按钮', lz.indexOf('data-launch="opencode"') < 0 && lz.indexOf('还没装') >= 0);
+  }
   check('给出「怎么启动、怎么用」说明', lz.indexOf('怎么启动、怎么用') >= 0);
   check('给出可复制的启动命令', lz.indexOf('启动命令：') >= 0);
   check('给出跑冒烟的入口', lz.indexOf('跑一次冒烟') >= 0);
 
+  // 点启动这条链路只有在真有可启动的工具时才验得到（服务端会拒掉没装工具的启动请求）
+  const launchProbe = {};
+  for (const id of ['opencode', 'dsh', 'cc-switch', 'claude-code']) {
+    launchProbe[id] = await (await fetch(BASE + '/api/tool/' + id)).json();
+  }
+  const launchId = ['opencode', 'dsh', 'cc-switch', 'claude-code'].filter((id) => launchProbe[id].installed)[0] || null;
   launchCalls.length = 0;
-  clickDocBtn({ 'data-launch': 'opencode', 'data-mode': 'interactive', 'data-name': 'OpenCode' });
-  await wait('启动确认框弹出', () => el('modal').classList.contains('show'));
-  const dry = launchCalls[launchCalls.length - 1];
-  check('点启动先向服务端要命令（dryRun）', !!dry && dry.dryRun === true && dry.toolId === 'opencode', JSON.stringify(dry));
-  // 安全边界：启动请求体里只能有这三个字段，不能出现路径 / 命令 / 参数
-  check('启动请求体只有 toolId / mode / dryRun', Object.keys(dry).sort().join(',') === 'dryRun,mode,toolId', Object.keys(dry).join(','));
-  check('确认框里是要跑的命令原文', el('modalBody').innerHTML.indexOf('cmd.exe /k') >= 0);
-  check('确认框说明会开一个新窗口', el('modalBody').innerHTML.indexOf('新窗口') >= 0);
-  el('modalCancel').onclick();
-  await new Promise(r => setTimeout(r, 150));
-  check('取消后没有真的启动', launchCalls.filter(c => !c.dryRun).length === 0);
+  if (launchId) {
+    setHash('#/tool/' + launchId);
+    await wait('已装工具页（启动）', () => el('app').innerHTML.indexOf('怎么启动、怎么用') >= 0);
+    check('已装的工具在页面上给可点的启动按钮', el('app').innerHTML.indexOf('data-launch="' + launchId + '"') >= 0);
+    clickDocBtn({ 'data-launch': launchId, 'data-mode': 'interactive', 'data-name': launchId });
+    await wait('启动确认框弹出', () => el('modal').classList.contains('show'));
+    const dry = launchCalls[launchCalls.length - 1];
+    check('点启动先向服务端要命令（dryRun）', !!dry && dry.dryRun === true && dry.toolId === launchId, JSON.stringify(dry));
+    // 安全边界：启动请求体里只能有这三个字段，不能出现路径 / 命令 / 参数
+    check('启动请求体只有 toolId / mode / dryRun', Object.keys(dry).sort().join(',') === 'dryRun,mode,toolId', Object.keys(dry).join(','));
+    check('确认框里是要跑的命令原文', el('modalBody').innerHTML.indexOf('cmd.exe') >= 0);
+    check('确认框说明会开一个新窗口', el('modalBody').innerHTML.indexOf('新窗口') >= 0);
+    el('modalCancel').onclick();
+    await new Promise(r => setTimeout(r, 150));
+    check('取消后没有真的启动', launchCalls.filter(c => !c.dryRun).length === 0);
+  } else {
+    check('（本机没装任何工具，跳过"点启动"这条链路）', true);
+  }
 
   // 启动按钮的可用性必须和接口状态一致：没装就禁用并写明原因，装了就能点。
   // （这一段以前写死"claude-code 没装"，机器上装好之后它就误报了。）
   setHash('#/tool/claude-code');
   await wait('claude-code 工具页（启动）', () => el('app').innerHTML.indexOf('怎么启动、怎么用') >= 0);
   const lz2 = el('app').innerHTML;
-  const apiCl2 = await (await fetch(BASE + '/api/tool/claude-code')).json();
+  const apiCl2 = launchProbe['claude-code'];
   check('启动按钮的可用性与接口状态一致',
     apiCl2.installed ? lz2.indexOf('data-launch' + '="claude-code"') >= 0
                      : lz2.indexOf('<button disabled') >= 0,
@@ -662,25 +683,36 @@ check('步骤状态跟着安装状态走', cl.indexOf('该你了') >= 0 || cl.in
   check('没装时写明不能启动的原因', apiCl2.installed || lz2.indexOf('还没装') >= 0);
   check('照样给出怎么启动的说明', lz2.indexOf('怎么启动、怎么用') >= 0);
 
-  // 首页卡片：已装的才给启动
+  // 首页卡片：装了才给启动按钮，没装就不给
   setHash('#/');
-  await wait('首页（启动）', () => el('app').innerHTML.indexOf('data-launch=') >= 0);
-  check('首页上已装的工具卡片有启动按钮', /data-launch="(opencode|dsh|cc-switch)"/.test(el('app').innerHTML));
-check('首页卡片的启动按钮与安装状态一致', apiCl2.installed || el('app').innerHTML.indexOf('data-launch="claude-code"') < 0);
+  await wait('首页（启动）', () => el('app').innerHTML.indexOf('#/tool/opencode') >= 0);
+  const homeLaunch = el('app').innerHTML;
+  if (launchId) {
+    check('首页上已装的工具卡片有启动按钮', homeLaunch.indexOf('data-launch="' + launchId + '"') >= 0);
+  } else {
+    check('本机没装工具时首页卡片不给启动按钮', homeLaunch.indexOf('data-launch=') < 0);
+  }
+  check('首页卡片的启动按钮与安装状态一致', launchProbe['claude-code'].installed || homeLaunch.indexOf('data-launch="claude-code"') < 0);
 
   // 从这里开始要真的在服务端跑任务了 —— 把"拦住 /api/run"的开关关掉。
   blockRun = false;
 
   // --- 只读体检：结论断言放在这里，因为它不依赖网络、结论是确定的 ---
+  // 这条要真的让服务端跑一次引擎，而引擎对"没装"的工具只会回一句未安装 ——
+  // 于是它也必须在装了 opencode 的机器上才有意义，没装就明说跳过。
   console.log('真实任务：只读的「验证可用性」');
-  setHash('#/tool/opencode');
-  await wait('opencode 工具页（验证）', () => el('app').innerHTML.indexOf('id="do-verify"') >= 0, 20000);
-  const endsBefore = (el('log').textContent.match(/== 结束：/g) || []).length;
-  el('do-verify').onclick();
-  await wait('只读验证任务结束', () => (el('log').textContent.match(/== 结束：/g) || []).length > endsBefore, 120000);
-  const verdictTail = el('log').textContent.split('== 结束：').pop().split('\n')[0];
-  check('只读验证给出确定结论', verdictTail.indexOf('已结束') < 0, '结论=' + verdictTail);
-  check('日志区收到引擎输出', el('log').textContent.indexOf('LLMKit') >= 0);
+  if (apiOp.installed) {
+    setHash('#/tool/opencode');
+    await wait('opencode 工具页（验证）', () => el('app').innerHTML.indexOf('id="do-verify"') >= 0, 20000);
+    const endsBefore = (el('log').textContent.match(/== 结束：/g) || []).length;
+    el('do-verify').onclick();
+    await wait('只读验证任务结束', () => (el('log').textContent.match(/== 结束：/g) || []).length > endsBefore, 120000);
+    const verdictTail = el('log').textContent.split('== 结束：').pop().split('\n')[0];
+    check('只读验证给出确定结论', verdictTail.indexOf('已结束') < 0, '结论=' + verdictTail);
+    check('日志区收到引擎输出', el('log').textContent.indexOf('LLMKit') >= 0);
+  } else {
+    check('（opencode 没装，跳过真实验证任务）', true);
+  }
 
   // --- 没有演练模式了：改动型动作一律先确认，且命令是服务端给的原文 ---
   console.log('改动前确认（改动型动作必须弹框）');
