@@ -1,0 +1,500 @@
+{
+  "schemaVersion": "0.1.0",
+  "updatedAt": "2026-01-01",
+  "_note": "统一错误翻译表。这是整个工具最该被持续打磨的文件：补一条规则、改一句提示，都不需要重新发版。之前这些提示散落在三个模块里各写一份，迟早走偏。",
+  "_matchNote": "match 里的维度全部可选，给定多个时按 AND 判定，同一维度内是 OR。priority 越大越先判定。textPattern 是 .NET 正则，大小写不敏感。",
+  "_contextNote": "context 取值：provider（真实可用性验证）、download（下载依赖或工具）、npm、winget、script（官方安装脚本）、config（配置写入）、install（安装过程）、filesystem。",
+  "rules": [
+    {
+      "id": "auth-invalid-key",
+      "priority": 200,
+      "category": "认证",
+      "severity": "fail",
+      "title": "API Key 被拒绝",
+      "match": { "httpStatus": [401, 403], "context": ["provider"] },
+      "explanation": "渠道明确拒绝了这把 key：要么 key 不对，要么它对这个接口没有权限。",
+      "actions": [
+        "回到渠道控制台确认这把 key 还在、没有被删除或停用",
+        "确认复制时没有带上多余的空格、换行或引号",
+        "确认这把 key 属于当前渠道 —— 不同平台签发的 key 互相不通用",
+        "如果是刚创建的 key，等 1 分钟再试（部分渠道有生效延迟）"
+      ]
+    },
+    {
+      "id": "quota-balance",
+      "priority": 195,
+      "category": "额度",
+      "severity": "fail",
+      "title": "账户余额或免费额度不足",
+      "match": { "context": ["provider"], "textPattern": "余额|额度不足|欠费|balance|insufficient|quota exceeded|exceeded your current quota|no credit" },
+      "explanation": "key 本身是有效的，但账户里没有可用额度了。",
+      "actions": [
+        "去渠道控制台查看余额与已用额度",
+        "领取该渠道的免费额度（多数国内渠道对新用户有赠送）",
+        "充值后通常几分钟内生效"
+      ]
+    },
+    {
+      "id": "quota-http-402",
+      "priority": 190,
+      "category": "额度",
+      "severity": "fail",
+      "title": "需要付费（402）",
+      "match": { "httpStatus": [402], "context": ["provider"] },
+      "explanation": "渠道返回 402，表示这个账号当前处于未付费或额度耗尽状态。",
+      "actions": [
+        "去渠道控制台完成充值或领取免费额度",
+        "确认账单页没有未支付的欠款"
+      ]
+    },
+    {
+      "id": "quota-rate-limit",
+      "priority": 185,
+      "category": "限流",
+      "severity": "warn",
+      "title": "请求过于频繁（429）",
+      "match": { "httpStatus": [429], "context": ["provider"] },
+      "explanation": "key 有效，但短时间内请求太多被限流了。",
+      "actions": [
+        "等 10 到 60 秒再重试",
+        "如果频繁出现，去渠道控制台确认该 key 的并发或速率限制"
+      ]
+    },
+    {
+      "id": "model-not-found",
+      "priority": 180,
+      "category": "模型",
+      "severity": "fail",
+      "title": "接口地址或模型名不对（404）",
+      "match": { "httpStatus": [404], "context": ["provider"] },
+      "explanation": "请求打到了不存在的路径或模型上。最常见的原因是 base_url 少写或多写了 /v1，或者模型名在这个渠道下不叫这个名字。",
+      "actions": [
+        "核对 base_url：Claude Code 用的 Anthropic 兼容端点通常以 /anthropic 结尾，且不要再手工补 /v1",
+        "去渠道控制台抄一遍模型的准确名称（大小写、连字符都要一致）",
+        "确认该渠道确实提供你要用的那个模型"
+      ]
+    },
+    {
+      "id": "model-name-rejected",
+      "priority": 175,
+      "category": "模型",
+      "severity": "fail",
+      "title": "渠道说模型名不对（400）",
+      "match": { "httpStatus": [400], "context": ["provider"], "textPattern": "model|模型" },
+      "explanation": "请求本身能被解析，但渠道不认识这个模型标识。",
+      "actions": [
+        "去渠道控制台确认模型名称的准确写法",
+        "注意同一个模型在不同渠道的命名可能完全不同"
+      ]
+    },
+    {
+      "id": "provider-bad-request",
+      "priority": 160,
+      "category": "请求",
+      "severity": "fail",
+      "title": "渠道拒绝了这次请求（400）",
+      "match": { "httpStatus": [400], "context": ["provider"] },
+      "explanation": "请求格式或参数不被该渠道接受。",
+      "actions": [
+        "确认 base_url 指向的是兼容端点（Anthropic 兼容 / OpenAI 兼容是两套不同的路径）",
+        "把完整错误信息连同诊断报告一起反馈"
+      ]
+    },
+    {
+      "id": "provider-server-error",
+      "priority": 155,
+      "category": "服务端",
+      "severity": "warn",
+      "title": "渠道服务端出错（5xx）",
+      "match": { "httpStatus": [500, 502, 503, 504], "context": ["provider"] },
+      "explanation": "问题在渠道那一侧，不在你这台电脑上。",
+      "actions": [
+        "过几分钟重试",
+        "查看渠道的状态页或公告，确认是否在维护",
+        "如果持续报错，换一个渠道试试"
+      ]
+    },
+    {
+      "id": "net-connection-closed",
+      "priority": 150,
+      "category": "网络",
+      "severity": "fail",
+      "title": "连接被中途关闭，一个字节都没收到",
+      "match": { "netKind": ["connection-closed"] },
+      "explanation": "TCP 层能连上，但数据一个都传不过去。这是最容易被误判成“网络正常”的情况：端口探测会全部通过，实际什么都下载不了。",
+      "actions": [
+        "如果本机有代理软件，把它的地址填给工具：-Proxy http://127.0.0.1:7897",
+        "确认代理软件处于“系统代理”或“TUN 模式”，只开界面不开代理不算",
+        "换一个网络试试（手机热点）用来区分是本机问题还是网络问题",
+        "如果在公司或校园网内，这类网络常只放行连接不转发数据，必须走代理"
+      ]
+    },
+    {
+      "id": "net-tls",
+      "priority": 145,
+      "category": "网络",
+      "severity": "fail",
+      "title": "HTTPS 握手失败",
+      "match": { "netKind": ["tls"] },
+      "explanation": "加密层没能建立起来：可能是系统缺少根证书、中间设备替换了证书、杀毒软件在做 HTTPS 扫描，或者当前进程不允许访问证书存储。",
+      "actions": [
+        "临时关闭杀毒软件的“HTTPS 扫描 / SSL 检查”后重试",
+        "确认系统时间准确 —— 时间偏差过大会直接导致证书校验失败",
+        "如果在公司网络里，导入公司的根证书或改用代理",
+        "把完整错误连同报告一起反馈，这类问题需要看具体报错"
+      ]
+    },
+    {
+      "id": "net-dns",
+      "priority": 140,
+      "category": "网络",
+      "severity": "fail",
+      "title": "域名解析失败",
+      "match": { "netKind": ["dns"] },
+      "explanation": "域名没能解析成 IP。可能是 DNS 设置有问题，也可能是该域名被污染或屏蔽。",
+      "actions": [
+        "把 DNS 改成 223.5.5.5（阿里）或 119.29.29.29（腾讯）后重试",
+        "换用国内镜像源（安装器已支持自动切换）",
+        "如果用代理，确认代理的 DNS 也在生效"
+      ]
+    },
+    {
+      "id": "net-timeout",
+      "priority": 135,
+      "category": "网络",
+      "severity": "fail",
+      "title": "连接超时",
+      "match": { "netKind": ["timeout"] },
+      "explanation": "在规定时间内没有等到响应。",
+      "actions": [
+        "确认能正常上网（先用浏览器打开一个网页）",
+        "如果目标在国外，很可能需要代理",
+        "公司/校园网环境可能需要走代理才能出网"
+      ]
+    },
+    {
+      "id": "net-connect-refused",
+      "priority": 130,
+      "category": "网络",
+      "severity": "fail",
+      "title": "无法连接到目标服务器",
+      "match": { "netKind": ["connect-refused"] },
+      "explanation": "连接被拒绝或根本建不起来。",
+      "actions": [
+        "确认代理软件的地址和端口填写正确，且它确实在运行",
+        "确认防火墙没有拦住这个程序",
+        "如果指定了端口，确认端口号没写错"
+      ]
+    },
+    {
+      "id": "net-proxy",
+      "priority": 125,
+      "category": "网络",
+      "severity": "fail",
+      "title": "代理相关错误",
+      "match": { "netKind": ["proxy"] },
+      "explanation": "代理这一环出了问题，请求没能正确穿过去。",
+      "actions": [
+        "确认代理地址格式为 http://主机:端口",
+        "如果代理需要认证，把用户名密码也带上",
+        "确认代理软件允许本机程序连接（部分软件默认只给浏览器用）"
+      ]
+    },
+    {
+      "id": "download-all-sources-failed",
+      "priority": 120,
+      "category": "下载",
+      "severity": "fail",
+      "title": "所有下载源都失败了",
+      "match": { "textPattern": "所有下载源都失败" },
+      "explanation": "官方源与国内镜像都没能取到文件，说明不是某个源的问题，而是出网本身不通。",
+      "actions": [
+        "先跑一次体检，看“真实数据往返”那一项是不是 0 —— 那是判断出网是否可用的关键指标",
+        "配置代理后重试：-Proxy http://127.0.0.1:7897",
+        "换一个网络环境再试"
+      ]
+    },
+    {
+      "id": "download-checksum-mismatch",
+      "priority": 118,
+      "category": "下载",
+      "severity": "fail",
+      "title": "下载文件的校验和不匹配",
+      "match": { "textPattern": "校验和不匹配|checksum mismatch|SHA256" },
+      "explanation": "下载到的文件和官方公布的值不一致。安装器已主动中止，没有继续安装。",
+      "actions": [
+        "重试一次 —— 传输中损坏是最常见的原因",
+        "如果反复失败，可能是中间设备改写了内容或镜像源不同步，换官方源重试",
+        "不要跳过校验继续安装"
+      ]
+    },
+    {
+      "id": "download-asset-missing",
+      "priority": 115,
+      "category": "下载",
+      "severity": "warn",
+      "title": "发布页里没有匹配的安装包",
+      "match": { "context": ["download"], "textPattern": "没有匹配|Release.*里没有|资产" },
+      "explanation": "工具的发布页改了文件命名规则，配置里的匹配规则匹配不上了。",
+      "actions": [
+        "安装器会退到“打开下载页手动装”的方式，跟着提示走即可",
+        "把这句话连同报告反馈，好把规则补上"
+      ]
+    },
+    {
+      "id": "npm-eacces",
+      "priority": 110,
+      "category": "npm",
+      "severity": "fail",
+      "title": "npm 没有权限写入全局目录",
+      "match": { "context": ["npm"], "textPattern": "EACCES|EPERM|permission denied|不允许访问" },
+      "explanation": "npm 的全局目录当前用户写不进去。这不是必须求管理员权限解决的问题。",
+      "actions": [
+        "安装器会自动把 npm 的 prefix 改到用户目录（%APPDATA%\\npm）后重试",
+        "如果仍然失败，手动执行：npm config set prefix \"%APPDATA%\\npm\" 然后重试",
+        "不要用“以管理员身份运行”去绕，那会让以后所有全局安装都要求管理员"
+      ]
+    },
+    {
+      "id": "npm-engine-mismatch",
+      "priority": 105,
+      "category": "npm",
+      "severity": "fail",
+      "title": "Node.js 版本不满足要求",
+      "match": { "context": ["npm"], "textPattern": "EBADENGINE|Unsupported engine|required.*node|engines" },
+      "explanation": "这个包要求的 Node.js 版本比你装的新。",
+      "actions": [
+        "先升级 Node.js（安装器的依赖阶段会用免管理员的便携版帮你装）",
+        "升级后重开终端再试，确认 node -v 已经是新版本"
+      ]
+    },
+    {
+      "id": "npm-package-not-found",
+      "priority": 100,
+      "category": "npm",
+      "severity": "fail",
+      "title": "npm 源里找不到这个包（404）",
+      "match": { "context": ["npm"], "textPattern": "E404|is not in the npm registry|404 Not Found.*npm" },
+      "explanation": "包名不对，或当前这个 npm 源没有同步到这个包。",
+      "actions": [
+        "安装器会自动换下一个 npm 源重试",
+        "如果都失败，说明包名写错了，需要更新工具的配置"
+      ]
+    },
+    {
+      "id": "npm-eresolve",
+      "priority": 95,
+      "category": "npm",
+      "severity": "fail",
+      "title": "依赖版本冲突（ERESOLVE）",
+      "match": { "context": ["npm"], "textPattern": "ERESOLVE|could not resolve dependency" },
+      "explanation": "本机已有的包与新装的包对依赖版本的要求互相冲突。",
+      "actions": [
+        "先清一次 npm 缓存：npm cache clean --force",
+        "如果之前装过旧的同名工具，先卸载：npm uninstall -g <包名>",
+        "把完整错误连同报告一起反馈"
+      ]
+    },
+    {
+      "id": "npm-network",
+      "priority": 90,
+      "category": "npm",
+      "severity": "fail",
+      "title": "npm 下载过程网络失败",
+      "match": { "context": ["npm"], "textPattern": "ETIMEDOUT|ENOTFOUND|ECONNRESET|network|socket hang up|fetch failed" },
+      "explanation": "npm 源连不上或中途断开。",
+      "actions": [
+        "安装器会自动切到国内镜像源（registry.npmmirror.com）重试",
+        "如果指定了代理，确认代理对命令行也生效"
+      ]
+    },
+    {
+      "id": "npm-generic",
+      "priority": 60,
+      "category": "npm",
+      "severity": "fail",
+      "title": "npm 安装失败",
+      "match": { "context": ["npm"] },
+      "explanation": "npm 返回了非零退出码。",
+      "actions": [
+        "看上面的原始输出，通常最后几行就是真正的原因",
+        "先跑一次体检确认 Node 与 npm 本身正常",
+        "把完整输出连同报告一起反馈"
+      ]
+    },
+    {
+      "id": "winget-missing",
+      "priority": 88,
+      "category": "winget",
+      "severity": "warn",
+      "title": "系统里没有 winget",
+      "match": { "context": ["winget"], "textPattern": "没有 winget|winget.*不.*找到|'winget' 不是|not recognized.*winget" },
+      "explanation": "Windows 10 1809 之前的系统不带 winget。",
+      "actions": [
+        "不用管它 —— 安装器的首选路线是免管理员的便携版，不依赖 winget",
+        "确实想用的话，去 Microsoft Store 装一个“应用安装程序”"
+      ]
+    },
+    {
+      "id": "winget-admin-required",
+      "priority": 86,
+      "category": "winget",
+      "severity": "warn",
+      "title": "winget 这个包需要管理员权限",
+      "match": { "context": ["winget"], "textPattern": "需要管理员|requires administrator|elevat|0x8A15002B" },
+      "explanation": "该包是机器级安装，必须提权。",
+      "actions": [
+        "改用免管理员的便携版安装层（安装器的默认首选）",
+        "或者以管理员身份重新运行本工具"
+      ]
+    },
+    {
+      "id": "ps-execution-policy",
+      "priority": 85,
+      "category": "PowerShell",
+      "severity": "warn",
+      "title": "被执行策略拦截",
+      "match": { "textPattern": "ExecutionPolicy|未数字签名|not digitally signed|无法加载文件.*因为在此系统上禁止运行脚本" },
+      "explanation": "系统的 PowerShell 执行策略不允许直接运行脚本。",
+      "actions": [
+        "不用改系统策略 —— 安装器一直是以 -ExecutionPolicy Bypass 的方式启动子脚本的",
+        "如果你手动跑脚本遇到这个错，用：powershell -NoProfile -ExecutionPolicy Bypass -File <脚本路径>"
+      ]
+    },
+    {
+      "id": "cmd-not-found",
+      "priority": 80,
+      "category": "PATH",
+      "severity": "fail",
+      "title": "命令找不到（明明装了却提示不是内部或外部命令）",
+      "match": { "textPattern": "不是内部或外部命令|not recognized as the name of a cmdlet|CommandNotFoundException" },
+      "explanation": "程序装好了，但当前终端的 PATH 还是旧的。安装时改的是注册表里的 PATH，已经打开的终端不会自动重新读取。",
+      "actions": [
+        "关掉终端窗口重新开一个 —— 这一步能解决绝大多数这种情况",
+        "安装器在安装过程中会用绝对路径调用程序，所以装的过程不会受影响",
+        "如果重开终端还是找不到，跑一次体检看“PATH 新鲜度”那一项"
+      ]
+    },
+    {
+      "id": "access-denied",
+      "priority": 75,
+      "category": "权限",
+      "severity": "fail",
+      "title": "拒绝访问",
+      "match": { "textPattern": "拒绝访问|Access is denied|UnauthorizedAccessException|AccessDenied" },
+      "explanation": "目标文件或目录不允许当前用户写入。",
+      "actions": [
+        "确认目标不是被系统保护的目录（尽量用免管理员的用户目录路线）",
+        "检查杀毒软件的“受控文件夹访问”是否拦住了写入",
+        "关掉正在占用该文件的程序后重试"
+      ]
+    },
+    {
+      "id": "file-locked",
+      "priority": 72,
+      "category": "文件占用",
+      "severity": "fail",
+      "title": "文件正被另一个程序占用",
+      "match": { "textPattern": "正在使用|being used by another process|EBUSY|另一个进程" },
+      "explanation": "要替换的文件正被占用，常见于目标程序还在运行。",
+      "actions": [
+        "关掉正在运行的目标工具（例如 Claude Code、cc-switch），再重试",
+        "确认没有在另一个终端里跑着同样的命令",
+        "如果实在找不到是谁占用，重启电脑最省事"
+      ]
+    },
+    {
+      "id": "defender-blocked",
+      "priority": 70,
+      "category": "安全软件",
+      "severity": "fail",
+      "title": "操作被安全软件阻止",
+      "match": { "textPattern": "已被阻止|操作已被系统阻止|blocked by|威胁|virus|defender" },
+      "explanation": "杀毒软件或 Windows Defender 拦下了这次写入或执行。",
+      "actions": [
+        "打开“Windows 安全中心 → 病毒和威胁防护 → 保护历史记录”，看具体是哪一项被拦",
+        "把被拦的文件或目录加入白名单后重试",
+        "装第三方客户端时误报很常见，确认来源可信后再加白名单"
+      ]
+    },
+    {
+      "id": "disk-full",
+      "priority": 68,
+      "category": "磁盘",
+      "severity": "fail",
+      "title": "磁盘空间不足",
+      "match": { "textPattern": "磁盘空间不足|not enough space|ENOSPC|空间不足" },
+      "explanation": "目标盘写满了。",
+      "actions": [
+        "清理系统盘，安装 Node 与各工具建议预留 5 GB 以上",
+        "用 -StateDir 把日志与备份挪到空间充足的盘"
+      ]
+    },
+    {
+      "id": "long-path",
+      "priority": 66,
+      "category": "路径",
+      "severity": "warn",
+      "title": "路径过长",
+      "match": { "textPattern": "路径过长|path too long|MAX_PATH|文件名或扩展名太长" },
+      "explanation": "Windows 默认的 260 字符路径上限被撞到了。node_modules 嵌套很深时很常见。",
+      "actions": [
+        "开启 NTFS 长路径支持（注册表 LongPathsEnabled=1，需要管理员）",
+        "或把项目放到层级更浅的目录（例如 D:\\proj 而不是很深的桌面路径）"
+      ]
+    },
+    {
+      "id": "install-artifact-pending",
+      "priority": 64,
+      "category": "残留",
+      "severity": "warn",
+      "title": "上次安装留下了残留",
+      "match": { "textPattern": "安装残留|\\.restoring\\.|\\.old\\.[0-9]" },
+      "explanation": "上一次安装或升级中断了，留下了 .old.<时间戳> / .restoring.<随机串> 这类文件。这种状态下直接重装往往会继续失败。",
+      "actions": [
+        "加 -CleanArtifacts 让安装器先把这些残留挪到备份区（不删除）再装",
+        "残留都是可还原的，装上后如果出问题可以用 -Restore 还回去"
+      ]
+    },
+    {
+      "id": "tool-conflict",
+      "priority": 62,
+      "category": "冲突",
+      "severity": "warn",
+      "title": "同一个工具有多份安装",
+      "match": { "textPattern": "多份安装|conflict|共存" },
+      "explanation": "多版本共存会导致命令走了旧的那份、升级后仍是旧版本这类极难自查的问题。",
+      "actions": [
+        "加 -ResolveConflicts 让安装器保留 PATH 命中的那份、其余挪到备份区",
+        "也可以先跑体检看看具体是哪几份共存"
+      ]
+    },
+    {
+      "id": "path-write-failed",
+      "priority": 60,
+      "category": "PATH",
+      "severity": "fail",
+      "title": "无法写入用户级 PATH",
+      "match": { "textPattern": "无法修改 PATH|HKCU.*Environment|SetEnvironmentVariable" },
+      "explanation": "用户级环境变量写不进去。",
+      "actions": [
+        "确认不是被杀毒软件或组策略锁定了 HKCU\\Environment",
+        "安装器会给出需要手动添加的目录，照着手动加也可以"
+      ]
+    },
+    {
+      "id": "script-nonzero-exit",
+      "priority": 55,
+      "category": "安装脚本",
+      "severity": "fail",
+      "title": "官方安装脚本执行失败",
+      "match": { "context": ["script"] },
+      "explanation": "官方提供的一键安装脚本返回了失败。脚本本身做了写系统目录之类的操作，失败原因通常在上面它自己的输出里。",
+      "actions": [
+        "安装器已经把脚本下载到本地留档了，可以打开看它到底做了什么",
+        "改用另一个安装层重试（例如 Claude Code 可以退回 npm 方式）",
+        "把脚本输出连同报告一起反馈"
+      ]
+    }
+  ]
+}

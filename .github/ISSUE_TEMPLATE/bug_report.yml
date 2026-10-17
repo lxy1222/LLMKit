@@ -1,0 +1,106 @@
+name: 报告问题
+description: 装不上、报错看不懂、行为不对
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        先看两处，能省你不少事：
+        - **`README.md` 的「已知限制」** —— 有些是已知未验证的，不是坏了
+        - **`README.md` 的「已知限制」一节** —— 先看有没有撞上已知问题
+
+  - type: checkboxes
+    id: preflight
+    attributes:
+      label: 先确认几件事
+      options:
+        - label: 我读过了 README 的「已知限制」
+          required: true
+        - label: 我用的不是管理员权限（本工具不需要管理员；如果需要，那本身就是要报的问题）
+          required: false
+
+  - type: dropdown
+    id: artifact
+    attributes:
+      label: 你用的是哪一个
+      options:
+        - 单文件 exe（LLMKit.exe）
+        - 绿色包（LLMKit.cmd / LLMKit-web.cmd）
+        - 单个自解压 .cmd（LLMKit-single-*.cmd）
+        - 直接跑源码（src\ps\...）
+    validations:
+      required: true
+
+  - type: dropdown
+    id: ui
+    attributes:
+      label: 在哪个界面上出的问题
+      options:
+        - 网页版
+        - 图形界面
+        - 命令行
+        - 打包 / 构建
+        - 跟界面无关（引擎本身）
+    validations:
+      required: true
+
+  - type: input
+    id: windows
+    attributes:
+      label: Windows 版本
+      placeholder: 例如 Windows 11 24H2 (26100)
+    validations:
+      required: true
+
+  - type: dropdown
+    id: powershell
+    attributes:
+      label: PowerShell 版本
+      description: 在 PowerShell 里执行 `$PSVersionTable.PSVersion` 可以看到
+      options:
+        - '5.1（Windows 自带）'
+        - '7.x'
+        - 不确定
+    validations:
+      required: true
+
+  - type: textarea
+    id: what
+    attributes:
+      label: 你做了什么
+      description: 越具体越好。哪一步、点了哪个按钮、勾没勾「真的执行」
+      placeholder: |
+        1) 双击 LLMKit-web.cmd
+        2) 进 #/tool/opencode 页面
+        3) 勾上「真的执行」，点「安装」
+        4) ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: 你期望发生什么，实际发生了什么
+    validations:
+      required: true
+
+  - type: textarea
+    id: report
+    attributes:
+      label: 诊断报告
+      description: |
+        跑这一条命令，它会生成报告并复制到剪贴板：
+        `powershell -NoProfile -ExecutionPolicy Bypass -File src\ps\Setup-LLMKit.ps1 -SkipCheck -SkipDeps -Diagnose -CopyDiagnostic`
+
+        报告**已自动脱敏**：不含 API key、用户名与邮箱。粘贴前扫一眼即可。
+      render: text
+    validations:
+      required: false
+
+  - type: textarea
+    id: extra
+    attributes:
+      label: 还有什么
+      description: 截图、日志片段、你试过哪些绕法
+    validations:
+      required: false

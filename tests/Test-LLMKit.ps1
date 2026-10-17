@@ -1,0 +1,701 @@
+﻿#Requires -Version 5.1
+<#
+.SYNOPSIS
+    LLMKit 单元测试
+
+.DESCRIPTION
+    只测纯函数（不碰注册表、不联网、不改系统），所以可以在任何机器上安全运行。
+    重点覆盖 PATH 合并/删除这类"改错了会把用户 PATH 弄坏"的逻辑。
+
+.EXAMPLE
+    powershell -NoProfile -ExecutionPolicy Bypass -File .\tests\Test-LLMKit.ps1
+#>
+[CmdletBinding()]
+param(
+    [string]$ModuleRoot
+)
+
+$ErrorActionPreference = 'Stop'
+try { [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false) } catch { }
+
+$testsDir = $PSScriptRoot
+if ([string]::IsNullOrEmpty($testsDir)) { $testsDir = Split-Path -Parent $MyInvocation.MyCommand.Path }
+$projectRoot = Split-Path -Parent $testsDir
+if ([string]::IsNullOrEmpty($ModuleRoot)) { $ModuleRoot = Join-Path $projectRoot 'src\ps' }
+
+Import-Module (Join-Path $ModuleRoot 'LLMKit.psm1') -Force -DisableNameChecking
+Import-Module (Join-Path $ModuleRoot 'LLMKit.Install.psm1') -Force -DisableNameChecking
+Import-Module (Join-Path $ModuleRoot 'LLMKit.Tools.psm1') -Force -DisableNameChecking
+Import-Module (Join-Path $ModuleRoot 'LLMKit.Config.psm1') -Force -DisableNameChecking
+Import-Module (Join-Path $ModuleRoot 'LLMKit.Diagnose.psm1') -Force -DisableNameChecking
+Import-Module (Join-Path $ModuleRoot 'LLMKit.Engine.psm1') -Force -DisableNameChecking
+Import-Module (Join-Path $ModuleRoot 'LLMKit.Service.psm1') -Force -DisableNameChecking
+
+$script:Pass = 0
+$script:Fail = 0
+$script:Failures = New-Object System.Collections.ArrayList
+
+function Assert-Equal {
+    param($Expected, $Actual, [string]$Name)
+    if ($Expected -eq $Actual) {
+        $script:Pass++
+        Write-Host ('  [PASS] ' + $Name) -ForegroundColor Green
+    } else {
+        $script:Fail++
+        [void]$script:Failures.Add($Name)
+        Write-Host ('  [FAIL] ' + $Name) -ForegroundColor Red
+        Write-Host ('         期望：[' + $Expected + ']') -ForegroundColor DarkGray
+        Write-Host ('         实际：[' + $Actual + ']') -ForegroundColor DarkGray
+    }
+}
+
+function Assert-True {
+    param($Condition, [string]$Name)
+    Assert-Equal $true ([bool]$Condition) $Name
+}
+
+Write-Host ''
+Write-Host 'LLMKit 单元测试' -ForegroundColor White
+Write-Host ('-' * 60) -ForegroundColor DarkGray
+
+# ======================================================================
+Write-Host 'Get-NormalizedPathEntry' -ForegroundColor Cyan
+# ======================================================================
+Assert-Equal 'c:\tools\nodejs' (Get-NormalizedPathEntry -Entry 'C:\Tools\NodeJS') '大小写归一'
+Assert-Equal 'c:\tools\nodejs' (Get-NormalizedPathEntry -Entry 'C:\Tools\NodeJS\') '去掉尾部反斜杠'
+Assert-Equal 'c:\tools\nodejs' (Get-NormalizedPathEntry -Entry '  C:\Tools\NodeJS  ') '去掉首尾空格'
+Assert-Equal '' (Get-NormalizedPathEntry -Entry '') '空字符串返回空'
+Assert-Equal '' (Get-NormalizedPathEntry -Entry '   ') '纯空格返回空'
+
+$expanded = Get-NormalizedPathEntry -Entry '%LOCALAPPDATA%\Programs\nodejs'
+Assert-True ($expanded -eq ([System.Environment]::ExpandEnvironmentVariables('%LOCALAPPDATA%\Programs\nodejs').ToLowerInvariant())) '环境变量被展开'
+
+# ======================================================================
+Write-Host 'Get-PathEntryList' -ForegroundColor Cyan
+# ======================================================================
+Assert-Equal 3 (@(Get-PathEntryList -PathValue 'C:\a;C:\b;C:\c').Count) '正常分隔'
+Assert-Equal 2 (@(Get-PathEntryList -PathValue 'C:\a;;C:\b;').Count) '忽略空项'
+Assert-Equal 0 (@(Get-PathEntryList -PathValue '').Count) '空输入'
+Assert-Equal '  C:\a  ' (@(Get-PathEntryList -PathValue '  C:\a  ;')[0]) '保留条目原始写法（只在比较时归一）'
+
+# ======================================================================
+Write-Host 'Merge-PathEntry（改错会弄坏用户 PATH，重点覆盖）' -ForegroundColor Cyan
+# ======================================================================
+$r = Merge-PathEntry -CurrentPath '' -Entry 'C:\New'
+Assert-Equal 'C:\New' $r.value '空 PATH 上新增'
+Assert-Equal $true $r.changed '空 PATH 上新增 -> changed'
+Assert-Equal 1 $r.added.Count '空 PATH 上新增 -> added 计数'
+
+$r = Merge-PathEntry -CurrentPath 'C:\a;C:\b' -Entry 'C:\c'
+Assert-Equal 'C:\a;C:\b;C:\c' $r.value '追加到末尾（不插队，避免遮蔽系统命令）'
+Assert-Equal $true $r.changed '追加 -> changed'
+
+$r = Merge-PathEntry -CurrentPath 'C:\a;C:\b' -Entry 'C:\a'
+Assert-Equal 'C:\a;C:\b' $r.value '已存在时值不变'
+Assert-Equal $false $r.changed '已存在时 changed=false'
+Assert-Equal $true $r.alreadyPresent '已存在时 alreadyPresent=true'
+
+$r = Merge-PathEntry -CurrentPath 'C:\A;C:\b' -Entry 'c:\a\'
+Assert-Equal $false $r.changed '大小写+尾斜杠差异视为同一个条目（幂等）'
+Assert-Equal 'c:\a;C:\b' $r.value '幂等时保留首次出现的写法位置'
+
+$r = Merge-PathEntry -CurrentPath 'C:\x;C:\x;C:\y' -Entry 'C:\x'
+Assert-Equal 'C:\x;C:\y' $r.value '清理重复项'
+Assert-Equal 1 $r.removed.Count '重复项计数正确'
+
+$r = Merge-PathEntry -CurrentPath 'C:\a' -Entry ''
+Assert-Equal 'C:\a' $r.value '空 Entry 不改动'
+Assert-Equal $false $r.changed '空 Entry -> changed=false'
+
+$r = Merge-PathEntry -CurrentPath 'C:\a; C:\b ' -Entry 'C:\c'
+Assert-Equal 'C:\a; C:\b ;C:\c' $r.value '不重写已有条目的原始写法'
+
+$r = Merge-PathEntry -CurrentPath '%LOCALAPPDATA%\Programs\nodejs' -Entry "$env:LOCALAPPDATA\Programs\nodejs"
+Assert-Equal $false $r.changed '未展开的 %VAR% 与展开后的路径视为同一条目'
+
+# ======================================================================
+Write-Host 'Remove-PathEntry' -ForegroundColor Cyan
+# ======================================================================
+$r = Remove-PathEntry -CurrentPath 'C:\a;C:\b;C:\c' -Entry 'C:\b'
+Assert-Equal 'C:\a;C:\c' $r.value '移除中间项'
+Assert-Equal $true $r.changed '移除 -> changed'
+Assert-Equal 1 $r.removed.Count '移除计数'
+
+$r = Remove-PathEntry -CurrentPath 'C:\a;C:\A' -Entry 'c:\a'
+Assert-Equal '' $r.value '大小写不敏感地全部移除'
+Assert-Equal 2 $r.removed.Count '全部移除计数'
+
+$r = Remove-PathEntry -CurrentPath 'C:\a;C:\b' -Entry 'C:\zzz'
+Assert-Equal 'C:\a;C:\b' $r.value '不存在的条目不动'
+Assert-Equal $false $r.changed '不存在的条目 -> changed=false'
+
+$r = Remove-PathEntry -CurrentPath 'C:\only' -Entry 'C:\only'
+Assert-Equal '' $r.value '移除唯一条目后为空串'
+
+# ======================================================================
+Write-Host 'Get-MirrorCandidates' -ForegroundColor Cyan
+# ======================================================================
+$rw = @(
+    [pscustomobject]@{ id = 'a'; match = '^https://github\.com/'; prefix = 'https://ghproxy.net/' },
+    [pscustomobject]@{ id = 'b'; match = '^https://github\.com/'; prefix = 'https://gh-proxy.com/' }
+)
+$c = Get-MirrorCandidates -Url 'https://github.com/x/y/releases/download/v1/f.zip' -MirrorRewriters $rw
+Assert-Equal 3 $c.Count '原始 URL + 2 个镜像'
+Assert-Equal 'https://github.com/x/y/releases/download/v1/f.zip' $c[0] '原始 URL 永远第一个（优先官方）'
+Assert-Equal 'https://ghproxy.net/https://github.com/x/y/releases/download/v1/f.zip' $c[1] '镜像改写正确'
+
+$c = Get-MirrorCandidates -Url 'https://nodejs.org/dist/v1/x.zip' -MirrorRewriters $rw
+Assert-Equal 1 $c.Count '不匹配的 URL 不加镜像'
+
+$c = Get-MirrorCandidates -Url 'https://github.com/a' -MirrorRewriters @()
+Assert-Equal 1 $c.Count '没有镜像规则时只有原始 URL'
+
+# ======================================================================
+Write-Host 'Get-RemoteSha256FromShasums' -ForegroundColor Cyan
+# ======================================================================
+$shasums = @'
+abc123  node-v22.11.0-win-x64.zip
+def456  node-v22.11.0-win-x86.zip
+
+ghi789 *node-v22.11.0-headers.tar.gz
+'@
+Assert-Equal 'ABC123' (Get-RemoteSha256FromShasums -ShasumsText $shasums -FileName 'node-v22.11.0-win-x64.zip') '命中目标行并转大写'
+Assert-Equal 'GHI789' (Get-RemoteSha256FromShasums -ShasumsText $shasums -FileName 'node-v22.11.0-headers.tar.gz') '处理二进制模式前缀 *'
+Assert-Equal $null (Get-RemoteSha256FromShasums -ShasumsText $shasums -FileName 'nope.zip') '找不到返回 null'
+Assert-Equal $null (Get-RemoteSha256FromShasums -ShasumsText '' -FileName 'x') '空文本返回 null'
+
+# ======================================================================
+Write-Host 'Resolve-NodeVersionFromIndex' -ForegroundColor Cyan
+# ======================================================================
+$idx = @'
+[
+  { "version": "v23.5.0", "lts": false },
+  { "version": "v22.12.0", "lts": "Jod" },
+  { "version": "v20.18.1", "lts": "Iron" }
+]
+'@
+Assert-Equal 'v22.12.0' (Resolve-NodeVersionFromIndex -IndexJsonText $idx -Filter 'lts') '跳过非 LTS，取最新 LTS'
+Assert-Equal 'v23.5.0' (Resolve-NodeVersionFromIndex -IndexJsonText $idx -Filter 'current') 'current 模式取最新'
+Assert-Equal $null (Resolve-NodeVersionFromIndex -IndexJsonText 'garbage' -Filter 'lts') '非法 JSON 返回 null'
+Assert-Equal $null (Resolve-NodeVersionFromIndex -IndexJsonText '[{"version":"v1.0.0","lts":false}]' -Filter 'lts') '全是非 LTS 时返回 null'
+
+# ======================================================================
+Write-Host 'Format-ByteSize' -ForegroundColor Cyan
+# ======================================================================
+Assert-Equal '0 B' (Format-ByteSize -Bytes 0) '0 字节'
+Assert-Equal '512 B' (Format-ByteSize -Bytes 512) '字节'
+Assert-Equal '1.5 KB' (Format-ByteSize -Bytes 1536) 'KB'
+Assert-Equal '32 MB' (Format-ByteSize -Bytes 33554432) 'MB'
+Assert-Equal '1.5 GB' (Format-ByteSize -Bytes 1610612736) 'GB'
+
+# ======================================================================
+
+# ======================================================================
+Write-Host 'ConvertTo-CsvList（-File 传参的坑，必须守住）' -ForegroundColor Cyan
+# ======================================================================
+# 用 -join 比较数组：PowerShell 里 @() -eq @() 是元素过滤而不是布尔比较，
+# 直接比较数组会得到"看起来通过"的假结果。
+Assert-Equal 'node|git' ((ConvertTo-CsvList -Values 'node,git') -join '|') '单字符串按逗号拆开（powershell -File 的实际传法）'
+Assert-Equal 'node|git' ((ConvertTo-CsvList -Values @('node','git')) -join '|') '真数组原样通过'
+Assert-Equal '' ((ConvertTo-CsvList -Values @()) -join '|') '空数组必须仍然是空'
+Assert-Equal 0 (@(ConvertTo-CsvList -Values @()).Count) '空数组的元素个数为 0（不能变成含空元素的数组）'
+Assert-Equal 0 (@(ConvertTo-CsvList -Values $null).Count) '$null 的元素个数为 0'
+Assert-Equal 'node|git' ((ConvertTo-CsvList -Values @($null, 'node,git', $null)) -join '|') '混入 null 时自动过滤'
+Assert-Equal 'node|git' ((ConvertTo-CsvList -Values ' node , git ') -join '|') '去除首尾空格'
+Assert-Equal 'node|git' ((ConvertTo-CsvList -Values 'node,,git') -join '|') '忽略空项'
+Assert-Equal 'node|git|git' ((ConvertTo-CsvList -Values @('node,git','git')) -join '|') '重复项保留（去重是调用方的事）'
+
+# ======================================================================
+Write-Host 'Get-ArtifactOwnerToolId（残留归属：宁可认不出来，也不能归错）' -ForegroundColor Cyan
+# ======================================================================
+function New-FakeGroup { param([string]$Dir, [string[]]$Members = @()) return [pscustomobject]@{ dir = $Dir; members = $Members } }
+Assert-Equal 'claude-code' (Get-ArtifactOwnerToolId -Group (New-FakeGroup 'C:\x\node_modules\@anthropic-ai\.claude-code-Abc123')) '识别 @anthropic-ai 路径'
+Assert-Equal 'claude-code' (Get-ArtifactOwnerToolId -Group (New-FakeGroup 'C:\x\.claude-code-best-Xyz')) '识别 .claude-code-* 目录'
+Assert-Equal 'claude-code' (Get-ArtifactOwnerToolId -Group (New-FakeGroup 'C:\x' @('C:\x\anthropic-helper'))) '从成员路径推断'
+Assert-Equal 'cc-switch' (Get-ArtifactOwnerToolId -Group (New-FakeGroup 'C:\x\cc-switch\stuff')) '识别 cc-switch'
+Assert-Equal 'codex' (Get-ArtifactOwnerToolId -Group (New-FakeGroup 'C:\x\codex\thing')) '识别 codex'
+Assert-Equal 'opencode' (Get-ArtifactOwnerToolId -Group (New-FakeGroup 'C:\x\opencode')) '识别 opencode'
+Assert-Equal 'gemini-cli' (Get-ArtifactOwnerToolId -Group (New-FakeGroup 'C:\x\gemini-cli\.gemini-x1y2z3')) '识别 gemini'
+Assert-Equal '' (Get-ArtifactOwnerToolId -Group (New-FakeGroup 'C:\x\something-else')) '认不出来时返回空串'
+
+# ======================================================================
+Write-Host 'Select-ToolTier（manual 层不参与自动安装；未提权时跳过需管理员的层）' -ForegroundColor Cyan
+# ======================================================================
+$fakeTool = [pscustomobject]@{
+    install = [pscustomobject]@{
+        tiers = @(
+            [pscustomobject]@{ id = 'native-script'; type = 'powershell-pipe'; needsAdmin = $false },
+            [pscustomobject]@{ id = 'npm-global'; type = 'npm'; needsAdmin = $false },
+            [pscustomobject]@{ id = 'winget'; type = 'winget'; needsAdmin = $true },
+            [pscustomobject]@{ id = 'manual'; type = 'manual'; needsAdmin = $false }
+        )
+    }
+}
+Assert-Equal 'native-script' (Select-ToolTier -Tool $fakeTool -IsAdmin $false).id '非管理员选到第一个免管理员层'
+Assert-Equal 'native-script' (Select-ToolTier -Tool $fakeTool -IsAdmin $true).id '管理员同样优先免管理员层（决策 D4）'
+Assert-Equal 'npm-global' (Select-ToolTier -Tool $fakeTool -IsAdmin $false -SkipTiers @('native-script')).id 'SkipTiers 生效'
+Assert-Equal 'winget' (Select-ToolTier -Tool $fakeTool -IsAdmin $true -OnlyTiers @('winget')).id 'OnlyTiers 生效'
+Assert-Equal $null (Select-ToolTier -Tool $fakeTool -IsAdmin $false -OnlyTiers @('winget')) '未提权且只允许需要管理员的层 -> 返回 null'
+Assert-Equal $null (Select-ToolTier -Tool $fakeTool -IsAdmin $true -OnlyTiers @('manual')) 'manual 层永远不参与自动安装'
+
+# ======================================================================
+Write-Host 'Find-InstallArtifacts（分组：同组只搬一次）' -ForegroundColor Cyan
+# ======================================================================
+$tmpArt = Join-Path $env:TEMP ('llmkit-art-' + [guid]::NewGuid().ToString('N').Substring(0, 8))
+[void](New-Item -ItemType Directory -Path (Join-Path $tmpArt 'a\.claude-code-Abc123\bin') -Force)
+[void](New-Item -ItemType Directory -Path (Join-Path $tmpArt 'b\.codex-Xyz789\lib') -Force)
+[System.IO.File]::WriteAllText((Join-Path $tmpArt 'a\.claude-code-Abc123\bin\claude.exe.old.1788434366489'), 'x')
+[System.IO.File]::WriteAllText((Join-Path $tmpArt 'a\.claude-code-Abc123\bin\claude.exe.restoring.0f82626a'), 'x')
+[System.IO.File]::WriteAllText((Join-Path $tmpArt 'b\.codex-Xyz789\lib\x.old.12345678'), 'x')
+[System.IO.File]::WriteAllText((Join-Path $tmpArt 'b\.codex-Xyz789\keep.txt'), 'keep')
+try {
+    $scan = Find-InstallArtifacts -Roots @($tmpArt) -MaxDepth 5
+    # 5 = 3 个残留文件 + 2 个安装器临时目录。组目录本身也算残留项，
+    # 因为清理时真正被搬走的就是它。
+    Assert-Equal 5 $scan.artifacts.Count '识别出 5 个残留项'
+    Assert-Equal 3 (@($scan.artifacts | Where-Object { $_.kind -eq 'file' }).Count) '其中文件级残留 3 个'
+    Assert-Equal 2 (@($scan.artifacts | Where-Object { $_.kind -eq 'dir' }).Count) '其中目录级（安装器临时目录）2 个'
+    Assert-Equal 2 $scan.groups.Count '归为 2 组（清理时按组搬，不是按文件搬）'
+    $grp = @($scan.groups | Where-Object { $_.dir -match 'claude-code' -and $_.members.Count -gt 1 })
+    Assert-Equal 1 $grp.Count 'claude 组把 2 个文件归到同一个目录下'
+    Assert-True ($scan.groups[0].dir -notmatch '\.old\.|\.restoring\.') '组名是安装器工作目录，不是残留文件本身'
+    Assert-Equal 0 (Find-InstallArtifacts -Roots @($tmpArt + '-not-exist') -MaxDepth 5).artifacts.Count '不存在的根目录不报错'
+} finally {
+    Remove-Item $tmpArt -Recurse -Force -ErrorAction SilentlyContinue
+}
+
+# ======================================================================
+Write-Host 'JSON 字符串字面量（写配置文件的正确性基础）' -ForegroundColor Cyan
+# ======================================================================
+$lit = ConvertTo-JsonStringLiteral -Value '中文"引号"与\反斜杠'
+Assert-True ($lit.Contains('中文')) '中文不转成 \uXXXX（配置文件要给人看也要给人改）'
+Assert-Equal '中文"引号"与\反斜杠' (ConvertFrom-JsonStringLiteral -Literal $lit) '转义往返一致'
+Assert-Equal "`n" (ConvertFrom-JsonStringLiteral -Literal '"\n"') '\n 还原成换行'
+Assert-Equal "`t" (ConvertFrom-JsonStringLiteral -Literal '"\t"') '\t 还原成制表符'
+Assert-Equal '"' (ConvertFrom-JsonStringLiteral -Literal '"\""') '\" 还原成引号'
+Assert-Equal '""' (ConvertTo-JsonStringLiteral -Value $null) 'null 输入产出空串（写 null 会让工具报错，空串更安全）'
+
+# ======================================================================
+Write-Host 'Get-JsonMemberSpan（只认顶层，不误伤嵌套同名键）' -ForegroundColor Cyan
+# ======================================================================
+$json = '{"a":1,"b":{"c":2},"d":"x,\"y\":{","e":[1,2],"target":true,"f":"g"}'
+$sp = Get-JsonMemberSpan -Text $json -Name 'target'
+Assert-True $sp.found '找到顶层成员'
+Assert-Equal 'true' $json.Substring($sp.valueStart, $sp.valueEnd - $sp.valueStart + 1) '布尔值区间精确'
+
+# 这是 .claude.json 的真实结构：projects.* 里也有同名字段
+$nested = '{"hasCompletedOnboarding":false,"projects":{"p1":{"hasCompletedOnboarding":true},"p2":{"hasCompletedOnboarding":true}}}'
+$sp2 = Get-JsonMemberSpan -Text $nested -Name 'hasCompletedOnboarding'
+Assert-Equal 'false' $nested.Substring($sp2.valueStart, $sp2.valueEnd - $sp2.valueStart + 1) '只匹配顶层，不误伤 projects 里的同名键'
+
+$tricky = '{"note":"}{[],:","target":"ok"}'
+$sp3 = Get-JsonMemberSpan -Text $tricky -Name 'target'
+Assert-Equal '"ok"' $tricky.Substring($sp3.valueStart, $sp3.valueEnd - $sp3.valueStart + 1) '字符串里的括号冒号不干扰定位'
+
+$deep = '{"x":{"a":[{"y":1},{"z":[2,3]}]},"w":"end"}'
+$sp4 = Get-JsonMemberSpan -Text $deep -Name 'w'
+Assert-Equal '"end"' $deep.Substring($sp4.valueStart, $sp4.valueEnd - $sp4.valueStart + 1) '跳过深层嵌套数组后仍能定位'
+
+Assert-Equal $false (Get-JsonMemberSpan -Text $json -Name 'nope').found '不存在的键返回未找到'
+Assert-Equal 'no-root-object' (Get-JsonMemberSpan -Text 'not json at all' -Name 'x').error '非 JSON 文本给出明确错误而不是乱定位'
+Assert-Equal $false (Get-JsonMemberSpan -Text $json -Name '').found '空名字优雅返回（不抛异常）'
+
+# ======================================================================
+Write-Host 'Get-JsonObjectEntries / Set / Add（保序改写）' -ForegroundColor Cyan
+# ======================================================================
+$obj = '{"k1":"v1","k2":2,"k3":{"n":1}}'
+$entries = Get-JsonObjectEntries -Text $obj -Start 0 -End ($obj.Length - 1)
+Assert-Equal 3 $entries.Count '枚举出 3 个成员'
+Assert-Equal 'k1' $entries[0].name '顺序保持不变'
+Assert-Equal 'k3' $entries[2].name '最后一个成员也对'
+Assert-Equal '"v1"' $entries[0].rawValue '原始值文本原样返回'
+Assert-Equal '{ "n": 1 }'.Replace(' ','') ($entries[2].rawValue -replace '\s','') '嵌套对象原样返回'
+
+$spB = Get-JsonMemberSpan -Text '{"a":1,"b":9}' -Name 'b'
+Assert-Equal '{"a":1,"b":2}' (Set-JsonMemberText -Text '{"a":1,"b":9}' -Span $spB -NewValueText '2') '替换成员值'
+
+$added = Add-JsonMemberText -Text '{"a":1}' -Name 'new' -ValueText '1' -Indent 0
+Assert-True ($added -match '"new": 1') '插入新成员'
+Assert-Equal 1 ($added | ConvertFrom-Json).new '插入后仍是合法 JSON 且值正确'
+$added2 = Add-JsonMemberText -Text '{}' -Name 'x' -ValueText '"y"' -Indent 0
+Assert-Equal 'y' ($added2 | ConvertFrom-Json).x '空对象也能插入'
+
+# ======================================================================
+Write-Host 'Resolve-ConfigValue（取值模板）' -ForegroundColor Cyan
+# ======================================================================
+$fprov = [pscustomobject]@{ anthropicBaseUrl = 'https://a/b'; models = @('m1', 'm2'); nil = $null }
+Assert-Equal 'https://a/b' (Resolve-ConfigValue -Template '{provider.anthropicBaseUrl}' -Provider $fprov) '解析渠道字段'
+Assert-Equal 'm1' (Resolve-ConfigValue -Template '{provider.models[0]}' -Provider $fprov) '解析数组下标 0'
+Assert-Equal 'm2' (Resolve-ConfigValue -Template '{provider.models[1]}' -Provider $fprov) '解析数组下标 1'
+Assert-Equal 'KEY1' (Resolve-ConfigValue -Template '{key}' -Provider $fprov -ApiKey 'KEY1') '解析 key'
+Assert-Equal '<在这里粘贴你的 API Key>' (Resolve-ConfigValue -Template '{keyOrPlaceholder}' -Provider $fprov) '未提供 key 时给占位提示'
+Assert-Equal '' (Resolve-ConfigValue -Template '{provider.nope}' -Provider $fprov) '未知字段返回空而不是乱塞值'
+Assert-Equal '' (Resolve-ConfigValue -Template '{provider.models[9]}' -Provider $fprov) '数组越界返回空'
+Assert-Equal '纯文本' (Resolve-ConfigValue -Template '纯文本' -Provider $fprov) '无模板原样返回'
+
+# ======================================================================
+Write-Host 'Get-MaskedConfigValue（密钥不进报告）' -ForegroundColor Cyan
+# ======================================================================
+Assert-Equal '***' (Get-MaskedConfigValue -Name 'X_TOKEN' -Value 'short') '短密钥完全掩码'
+$maskFixture = 'sk-' + ('T' * 24)   # 运行时拼出来，源码里不留密钥形态的字面量
+Assert-Equal ($maskFixture.Substring(0, 6) + '...' + $maskFixture.Substring($maskFixture.Length - 4)) (Get-MaskedConfigValue -Name 'X_TOKEN' -Value $maskFixture) '长密钥首尾保留（前 6 后 4）'
+Assert-Equal 'https://a/b' (Get-MaskedConfigValue -Name 'BASE_URL' -Value 'https://a/b') '非密钥字段不掩码'
+Assert-Equal '' (Get-MaskedConfigValue -Name 'X_KEY' -Value '') '空值返回空'
+
+# ======================================================================
+Write-Host '统一错误翻译表（config/errormap.json）' -ForegroundColor Cyan
+# ======================================================================
+$cfgRoot = $projectRoot
+$map = Get-ErrorMap -ConfigRoot $cfgRoot
+Assert-True ($map.Count -ge 30) ('规则表至少 30 条（实际 ' + $map.Count + '）')
+Assert-Equal $map.Count (@($map | ForEach-Object { $_.id } | Sort-Object -Unique).Count) '规则 id 无重复'
+Assert-True ([int](Get-ObjectProp -Object $map[0] -Name 'priority') -ge [int](Get-ObjectProp -Object $map[$map.Count - 1] -Name 'priority')) '已按 priority 降序排好'
+
+Assert-Equal 'auth-invalid-key' (Get-ErrorInterpretation -HttpStatus 401 -Context 'provider' -ConfigRoot $cfgRoot).ruleId '401 → key 被拒绝'
+Assert-Equal 'quota-http-402' (Get-ErrorInterpretation -HttpStatus 402 -Context 'provider' -ConfigRoot $cfgRoot).ruleId '402 → 需要付费'
+Assert-Equal 'quota-rate-limit' (Get-ErrorInterpretation -HttpStatus 429 -Context 'provider' -ConfigRoot $cfgRoot).ruleId '429 → 限流（而不是误判成额度不足）'
+Assert-Equal 'model-not-found' (Get-ErrorInterpretation -HttpStatus 404 -Context 'provider' -ConfigRoot $cfgRoot).ruleId '404 → 接口或模型名不对'
+Assert-Equal 'provider-server-error' (Get-ErrorInterpretation -HttpStatus 503 -Context 'provider' -ConfigRoot $cfgRoot).ruleId '503 → 服务端出错'
+Assert-Equal 'quota-balance' (Get-ErrorInterpretation -HttpStatus 400 -Text 'Insufficient balance, please recharge' -Context 'provider' -ConfigRoot $cfgRoot).ruleId '400+balance 文本 → 判为额度不足（文本判据优先于状态码）'
+Assert-Equal 'model-name-rejected' (Get-ErrorInterpretation -HttpStatus 400 -Text 'unknown model: foo' -Context 'provider' -ConfigRoot $cfgRoot).ruleId '400+model 文本 → 判为模型名不对'
+Assert-Equal 'net-connection-closed' (Get-ErrorInterpretation -NetKind 'connection-closed' -ConfigRoot $cfgRoot).ruleId '按网络错误种类命中'
+Assert-Equal 'net-tls' (Get-ErrorInterpretation -NetKind 'tls' -ConfigRoot $cfgRoot).ruleId '证书类错误'
+Assert-Equal 'npm-eacces' (Get-ErrorInterpretation -Text 'npm ERR! code EACCES syscall mkdir' -ConfigRoot $cfgRoot).ruleId '不带 context 也能命中 npm 规则（两遍匹配的意义所在）'
+Assert-Equal 'npm-eresolve' (Get-ErrorInterpretation -Text 'npm ERR! code ERESOLVE' -ConfigRoot $cfgRoot).ruleId 'ERESOLVE 有独立规则'
+Assert-Equal 'cmd-not-found' (Get-ErrorInterpretation -Text "'claude' 不是内部或外部命令，也不是可运行的程序" -ConfigRoot $cfgRoot).ruleId '中文 Windows 报错也能认出来'
+Assert-Equal 'access-denied' (Get-ErrorInterpretation -Text 'Access is denied' -ConfigRoot $cfgRoot).ruleId '拒绝访问'
+Assert-Equal 'ps-execution-policy' (Get-ErrorInterpretation -Text '无法加载文件，因为在此系统上禁止运行脚本' -ConfigRoot $cfgRoot).ruleId '执行策略拦截'
+Assert-Equal 'download-checksum-mismatch' (Get-ErrorInterpretation -Text '校验和不匹配：期望 A，实际 B' -ConfigRoot $cfgRoot).ruleId '校验和不匹配'
+Assert-Equal $false (Get-ErrorInterpretation -Text 'zzz totally unknown gibberish' -ConfigRoot $cfgRoot).matched '纯未知文本不硬套规则（宁可说不知道）'
+Assert-True ((Get-ErrorInterpretation -HttpStatus 401 -Context 'provider' -ConfigRoot $cfgRoot).actions.Count -ge 2) '命中的规则要给出多条具体动作'
+
+# Test-ErrorRuleMatch 的 -IgnoreContext 就是字面意思：跳过 context 这一维。
+# 所以纯 context 规则在忽略 context 后必然命中 —— 真正拦住它的是下面那个判据函数
+# 和 Get-ErrorInterpretation 的第二遍过滤。这三条一起才说明防护是完整的。
+$ctxOnlyRule = [pscustomobject]@{ match = [pscustomobject]@{ context = @('npm') } }
+Assert-Equal $true (Test-ErrorRuleMatch -Rule $ctxOnlyRule -Text 'anything at all' -Context 'npm') '给定正确 context 时纯 context 规则可用'
+Assert-Equal $false (Test-ErrorRuleHasSpecificMatcher -Rule $ctxOnlyRule) '纯 context 规则被判定为没有具体判据'
+Assert-Equal $false (Get-ErrorInterpretation -Text 'zzz totally unknown gibberish' -Context 'install' -ConfigRoot $cfgRoot).matched '第二遍匹配不会让 npm-generic 这类纯 context 规则通吃一切'
+Assert-Equal $true (Get-ErrorInterpretation -Text 'zzz totally unknown gibberish' -Context 'npm' -ConfigRoot $cfgRoot).matched '但调用方明确说"这是 npm 失败"时，兜底规则应当命中'
+
+# ======================================================================
+Write-Host 'Protect-SensitiveText（这份报告一定会被粘进聊天窗口）' -ForegroundColor Cyan
+# ======================================================================
+# 刻意在运行时拼出来：源码里不留任何"长得像密钥"的字面量，免得被 GitHub 的
+# 密钥扫描或 gitleaks 拦下来（开源仓库的常规做法）。
+$secret = 'sk-' + ('T' * 24)
+$uhex = 'a' * 64   # 同上：长标识串也在运行时拼，免得被当成机器码类密钥
+$raw = 'key=' + $secret + ' path=' + $env:USERPROFILE + '\x mail=' + ('someone' + '@' + 'example.invalid') + ' hex=' + $uhex + ' auth: Bearer ' + $secret
+$clean = Protect-SensitiveText -Text $raw
+Assert-True (-not $clean.Contains($secret)) '原始密钥不残留'
+Assert-True (-not $clean.Contains($env:USERPROFILE)) '用户名路径不残留'
+Assert-True (-not $clean.Contains('someone' + '@' + 'example.invalid')) '邮箱不残留'
+Assert-True (-not $clean.Contains($uhex)) '长标识串不残留'
+Assert-True ($clean.Contains('%USERPROFILE%')) '保留了可读的占位符（人还要看得懂）'
+Assert-Equal '' (Protect-SensitiveText -Text '') '空输入返回空'
+Assert-Equal '普通文本没有敏感内容' (Protect-SensitiveText -Text '普通文本没有敏感内容') '普通文本不被误改'
+Assert-True ((Protect-SensitiveText -Text "机器名 $env:COMPUTERNAME 出现在句子里") -notmatch [regex]::Escape($env:COMPUTERNAME)) '机器名被隐去'
+
+# ======================================================================
+Write-Host '引擎输出判定（网页版在用的那一份）' -ForegroundColor Cyan
+# ======================================================================
+# 这套判定原来和 WinForms 向导放在一起。桌面版删掉之后，只有"从引擎输出判断这一步成不成"
+# 这件事还留着 —— 网页版靠它给每一步下结论，所以测试也要跟着留在它现在住的地方。
+foreach ($c in @(
+        @{ v = @('结论：一切正常，可以开始安装'); e = 'ok' },
+        @{ v = @('结论：基本可用，有需要留意的项'); e = 'warn' },
+        @{ v = @('结论：存在问题，需要处理'); e = 'fail' },
+        @{ v = @('演练结束：未写任何文件。'); e = 'dryrun' },
+        @{ v = @('随便什么别的输出'); e = 'unknown' }
+    )) {
+    Assert-Equal $c.e (Get-LLMKitStepStatusFromOutput -Lines $c.v) ('判定 ' + $c.e)
+}
+
+# ======================================================================
+Write-Host '动作层（服务层）' -ForegroundColor Cyan
+# ======================================================================
+$actions = @(Get-LLMKitActionCatalog)
+Assert-True ($actions.Count -ge 8) ('动作清单至少 8 条（实际 ' + $actions.Count + '）')
+Assert-Equal $actions.Count (@($actions | ForEach-Object { $_.id } | Sort-Object -Unique).Count) '动作 id 无重复'
+Assert-Equal 0 (@($actions | Where-Object { [string]::IsNullOrEmpty($_.label) -or [string]::IsNullOrEmpty($_.desc) -or [string]::IsNullOrEmpty($_.scope) }).Count) '每条动作都有 label / desc / scope'
+Assert-Equal 0 (@($actions | Where-Object { @('global', 'tool', 'session') -notcontains $_.scope }).Count) 'scope 取值合法'
+Assert-Equal 0 (@($actions | Where-Object { $_.scope -eq 'tool' -and $_.id -notlike 'tool-*' }).Count) '工具范围的动作都以 tool- 开头'
+Assert-True (@($actions | Where-Object { $_.destructive }).Count -ge 5) '至少有 5 条会被标为"会改动系统"'
+
+# 这是整个界面最重要的一条不变式：默认永远只演练
+$svcRoot = $projectRoot
+foreach ($a in $actions) {
+    $tgt = ''
+    if ($a.scope -eq 'tool') { $tgt = 'opencode' }
+    elseif ($a.scope -eq 'session') { $tgt = 'out\state\sessions\example.json' }
+    $dry = Get-LLMKitActionCommandLine -ActionId $a.id -ConfigRoot $svcRoot -TargetId $tgt
+    $real = Get-LLMKitActionCommandLine -ActionId $a.id -ConfigRoot $svcRoot -TargetId $tgt -Apply
+    Assert-True ($dry.arguments -notcontains '-Apply') ('演练模式 ' + $a.id + ' 绝不带 -Apply')
+    if ($a.destructive) {
+        Assert-True ($real.arguments -contains '-Apply') ('destructive 动作 ' + $a.id + ' 执行时才带 -Apply')
+        Assert-Equal $true $real.willApply ($a.id + ' willApply=true')
+    } else {
+        Assert-True ($real.arguments -notcontains '-Apply') ('只读动作 ' + $a.id + ' 永不带 -Apply')
+        Assert-Equal $false $real.willApply ($a.id + ' willApply=false')
+    }
+    Assert-Equal $dry.arguments.Count (@($dry.arguments | Select-Object -Unique).Count) ($a.id + ' 参数无重复')
+    Assert-True ($dry.commandLine -match 'Setup-LLMKit\.ps1') ($a.id + ' 命令行含可复制的脚本路径')
+}
+
+$threw = $false
+try { $null = Get-LLMKitActionCommandLine -ActionId 'tool-install' -ConfigRoot $svcRoot } catch { $threw = $true }
+Assert-Equal $true $threw '工具范围动作缺少 TargetId 时报错而不是瞎跑'
+$threw2 = $false
+try { $null = Get-LLMKitAction -ActionId 'no-such-action' } catch { $threw2 = $true }
+Assert-Equal $true $threw2 '未知动作报错'
+
+$un1 = Get-LLMKitActionCommandLine -ActionId 'tool-uninstall' -ConfigRoot $svcRoot -TargetId claude-code
+$un2 = Get-LLMKitActionCommandLine -ActionId 'tool-uninstall' -ConfigRoot $svcRoot -TargetId claude-code -RemoveUserConfig
+Assert-True ($un1.arguments -contains '-Uninstall') '卸载动作带 -Uninstall'
+Assert-True ($un1.arguments -notcontains '-RemoveUserConfig') '默认不碰用户配置'
+Assert-True ($un2.arguments -contains '-RemoveUserConfig') '显式勾选后才动用户配置'
+
+$cl = Get-LLMKitActionCommandLine -ActionId 'tool-artifacts' -ConfigRoot $svcRoot -TargetId claude-code
+Assert-True ($cl.arguments -contains '-CleanOnly') '清理残留走 -CleanOnly'
+Assert-True ($cl.arguments -notcontains '-IncludeTools') '清理残留不带 -IncludeTools（否则会顺带把工具装上）'
+
+$cw = Get-LLMKitActionCommandLine -ActionId 'config-write' -ConfigRoot $svcRoot -ProviderId deepseek -AuthTokenEnvVar LLMKIT_TOKEN
+Assert-True ($cw.arguments -contains '-Configure') '写配置带 -Configure'
+Assert-True ($cw.arguments -contains 'deepseek') '渠道 id 被传下去'
+Assert-True ($cw.arguments -contains '-AuthTokenEnvVar') '推荐用环境变量传 key'
+
+$providers = @(Get-LLMKitProviderList -ConfigRoot $svcRoot)
+Assert-Equal 9 $providers.Count '渠道 9 个'
+Assert-Equal 0 (@($providers | Where-Object { [string]::IsNullOrEmpty($_.id) -or [string]::IsNullOrEmpty($_.registerUrl) }).Count) '每个渠道都有 id 与注册链接'
+# 依赖安装流水线已删除（Node / Git 现在是普通工具），这里顺势确认它们确实在工具目录里、
+# 而且 config/dependencies.json 里不再登记任何依赖 —— 谁要是又把它们塞回去，这条会先红。
+$catalogIds = @((Get-ToolCatalog -ConfigRoot $svcRoot).tools.tools | ForEach-Object { [string](Get-ObjectProp -Object $_ -Name 'id') })
+Assert-True ($catalogIds -contains 'node') 'node 在工具目录里'
+Assert-True ($catalogIds -contains 'git') 'git 在工具目录里'
+
+# ======================================================================
+Write-Host '状态解析必须对齐"引擎真实产出的文案"' -ForegroundColor Cyan
+# ======================================================================
+# 这一组刻意不用手编字符串，而是真的去调格式化函数、把它的输出交给解析器。
+# 之前就是因为用例全是自编字符串，解析函数和真实文案对不上却没被发现 ——
+# 真实运行时所有结论都被判成 unknown。
+function Get-FakeReport {
+    param([ValidateSet('ok', 'warn', 'fail')][string]$Verdict)
+    $okN = 0; $warnN = 0; $failN = 0
+    if ($Verdict -eq 'ok') { $okN = 1 } elseif ($Verdict -eq 'warn') { $warnN = 1 } else { $failN = 1 }
+    return [pscustomobject]@{
+        checks = @([pscustomobject]@{ id = 'x'; category = '测试'; status = 'info'; title = '样例'; detail = ''; action = '' })
+        summary = [pscustomobject]@{ ok = $okN; warn = $warnN; fail = $failN; info = 1; verdict = $Verdict; checkCount = 1 }
+        durationMs = 1
+    }
+}
+function Get-FakeVerification {
+    param([ValidateSet('ok', 'warn', 'fail')][string]$Verdict)
+    return [pscustomobject]@{
+        verdict = $Verdict
+        counts = [pscustomobject]@{ ok = 1; warn = 0; fail = 0; info = 0 }
+        items = @([pscustomobject]@{ id = 'x'; category = '测试'; status = 'ok'; title = '样例'; detail = ''; actions = @() })
+    }
+}
+# Write-Host 在 PS 5.0+ 走信息流，所以 6>&1 能把格式化输出抓下来
+foreach ($v in @('ok', 'warn', 'fail')) {
+    $txt = @(Format-LLMKitReport -Report (Get-FakeReport -Verdict $v) -NoColor 6>&1) -join "`n"
+    Assert-True ($txt -match '结论：') ('M0 报告文案可被抓取（' + $v + '）')
+    Assert-Equal $v (Get-LLMKitStepStatusFromOutput -Lines @($txt -split "`n")) ('M0 真实文案 → 判定为 ' + $v)
+}
+foreach ($v in @('ok', 'warn', 'fail')) {
+    $txt = @(Format-LLMKitVerification -Verification (Get-FakeVerification -Verdict $v) -NoColor 6>&1) -join "`n"
+    Assert-True ($txt -match '结论：') ('复检文案可被抓取（' + $v + '）')
+    Assert-Equal $v (Get-LLMKitStepStatusFromOutput -Lines @($txt -split "`n")) ('复检真实文案 → 判定为 ' + $v)
+}
+Assert-Equal 'dryrun' (Get-LLMKitStepStatusFromOutput -Lines @('演练结束：未写任何文件。')) '演练文案 → dryrun'
+Assert-Equal 'unknown' (Get-LLMKitStepStatusFromOutput -Lines @('随便什么别的东西')) '无关输出 → unknown（宁可说不知道）'
+
+# ======================================================================
+Write-Host ''
+Write-Host '工具目录的角色分组（智能体 vs 配套工具）' -ForegroundColor Cyan
+# ======================================================================
+# 界面按 role 把七个工具分成两组：5 个"智能体"（自己调模型）+ 2 个"配套工具"：
+#   · provider-manager = cc-switch（自己不出模型，给别的智能体换渠道用）
+#   · companion        = node / git（别的工具的运行环境）、python（编程运行时）、pycharm（写 Python 的 IDE）
+# 这些约定不是显示层的细节：
+#   · role 写错 → 配套工具会被当成"也要配 key 的智能体"，首页分组和顶栏顺序都跟着错
+#   · 配套工具排到前面 → 新手先装它，而它装上了也不会有任何可用的反馈，白挫败一次
+# 所以钉在这里，而不是靠肉眼看界面。
+$catalog = Get-ToolCatalog -ConfigRoot $projectRoot
+$allTools = @($catalog.tools.tools)
+Assert-Equal 10 $allTools.Count '目录里是十个工具'
+
+$roles = @($allTools | ForEach-Object { [string](Get-ObjectProp -Object $_ -Name 'role') })
+$badRoles = @($roles | Where-Object { @('agent', 'provider-manager', 'companion') -notcontains $_ })
+Assert-Equal 0 $badRoles.Count ('role 只用白名单里的值（越界：' + ($badRoles -join '、') + '）')
+$agents = @($allTools | Where-Object { [string](Get-ObjectProp -Object $_ -Name 'role') -eq 'agent' })
+Assert-Equal 5 $agents.Count '五个智能体'
+$mgrList = @($allTools | Where-Object { [string](Get-ObjectProp -Object $_ -Name 'role') -eq 'provider-manager' })
+Assert-Equal 1 $mgrList.Count '一个管渠道的配套工具'
+Assert-Equal 'cc-switch' ([string](Get-ObjectProp -Object $mgrList[0] -Name 'id')) '管渠道的配套工具就是 cc-switch'
+$compList = @($allTools | Where-Object { [string](Get-ObjectProp -Object $_ -Name 'role') -eq 'companion' })
+Assert-Equal 4 $compList.Count '四个备环境的配套工具'
+$compIds = @($compList | ForEach-Object { [string](Get-ObjectProp -Object $_ -Name 'id') })
+Assert-True ($compIds -contains 'python') '备环境的配套工具里有 python'
+Assert-True ($compIds -contains 'node') '备环境的配套工具里有 node'
+Assert-True ($compIds -contains 'git') '备环境的配套工具里有 git'
+Assert-True ($compIds -contains 'pycharm') '备环境的配套工具里有 pycharm'
+
+# python 的常用库清单：只检测、不安装，所以每条都必须有 name 与 why
+# Node 的版本下限：低于 v18 时 Codex / OpenCode / Gemini CLI / dsh 都可能装不上
+$nodeTool = @($allTools | Where-Object { [string](Get-ObjectProp -Object $_ -Name 'id') -eq 'node' })[0]
+$nodeMin = Get-ObjectProp -Object (Get-ObjectProp -Object $nodeTool -Name 'verify') -Name 'minMajor'
+Assert-Equal 18 ([int]$nodeMin) 'Node 登记了版本下限 18'
+# Git 没有交互界面：启动必须被配置成禁用并给出原因，否则页面上会有一个点了没用的按钮
+$gitTool = @($allTools | Where-Object { [string](Get-ObjectProp -Object $_ -Name 'id') -eq 'git' })[0]
+$gitLaunch = Get-ObjectProp -Object $gitTool -Name 'launch'
+Assert-True ([bool](Get-ObjectProp -Object $gitLaunch -Name 'disabled')) 'Git 的启动被配置成禁用'
+Assert-True ([string](Get-ObjectProp -Object $gitLaunch -Name 'disabledReason')).Length -gt 0 'Git 的禁用给出了原因'
+$pyTool = @($allTools | Where-Object { [string](Get-ObjectProp -Object $_ -Name 'id') -eq 'python' })[0]
+$pyPkgs = @(Get-ObjectProp -Object $pyTool -Name 'packages' | Where-Object { $_ })
+Assert-True ($pyPkgs.Count -ge 10) ('python 登记了常用库清单（' + $pyPkgs.Count + ' 个）')
+foreach ($pk in $pyPkgs) {
+    Assert-True ([string](Get-ObjectProp -Object $pk -Name 'name')).Length -gt 0 ('库有条目名：' + [string](Get-ObjectProp -Object $pk -Name 'name'))
+    Assert-True ([string](Get-ObjectProp -Object $pk -Name 'why')).Length -gt 0 ('库说明了用途：' + [string](Get-ObjectProp -Object $pk -Name 'name'))
+}
+# py 是启动器，不是第二份安装 —— 它必须写在 detectOnlyCommands 里，别混进 commands
+$pyCmds = @(Get-ObjectProp -Object $pyTool -Name 'commands')
+$pyOnly = @(Get-ObjectProp -Object $pyTool -Name 'detectOnlyCommands')
+Assert-True ($pyCmds -notcontains 'py') 'py 不在 commands 里（它是启动器，不是安装副本）'
+Assert-True ($pyOnly -contains 'py') 'py 登记在 detectOnlyCommands 里'
+
+$maxAgentPrio = (@($agents | ForEach-Object { [int](Get-ObjectProp -Object $_ -Name 'priority') }) | Measure-Object -Maximum).Maximum
+foreach ($c in @($mgrList + $compList)) {
+    Assert-True ([int](Get-ObjectProp -Object $c -Name 'priority') -gt $maxAgentPrio) ('配套工具的优先级排在所有智能体之后：' + [string](Get-ObjectProp -Object $c -Name 'id'))
+}
+$prio = @($allTools | ForEach-Object { [int](Get-ObjectProp -Object $_ -Name 'priority') })
+Assert-Equal $prio.Count (@($prio | Sort-Object -Unique).Count) '优先级无重复（顺序才是确定的）'
+
+$managed = @(Get-ObjectProp -Object $mgrList[0] -Name 'manages')
+$ids = @($allTools | ForEach-Object { [string](Get-ObjectProp -Object $_ -Name 'id') })
+Assert-True ($managed.Count -ge 1) '配套工具登记了它管哪些智能体'
+Assert-Equal 0 (@($managed | Where-Object { $ids -notcontains $_ }).Count) ('manages 里的 id 在目录里都能找到：' + ($managed -join '、'))
+Assert-True ($managed -notcontains 'cc-switch') 'manages 不指向自己'
+# 模型归属：alsoViaCcSwitch 必须和 cc-switch 的 manages 严格一致 —— 文案与配置不能各说各的
+foreach ($t2 in $allTools) {
+    $tid = [string](Get-ObjectProp -Object $t2 -Name 'id')
+    $mMeta = Get-ObjectProp -Object $t2 -Name 'models'
+    Assert-True ($null -ne $mMeta) ($tid + ' 有 models 段')
+    $inManages = (@($managed) -contains $tid)
+    $flag = [bool](Get-ObjectProp -Object $mMeta -Name 'alsoViaCcSwitch')
+    if ($tid -eq 'cc-switch') {
+        Assert-True (-not $flag) '配套工具自己不归 cc-switch 管'
+    } else {
+        Assert-Equal $inManages $flag ($tid + ' 的 alsoViaCcSwitch 与 cc-switch 的 manages 一致')
+    }
+    Assert-True (([string](Get-ObjectProp -Object $mMeta -Name 'field')).Length -gt 0) ($tid + ' 的 models.field 说清了写在哪')
+}
+$writableTools = @($allTools | Where-Object { [bool](Get-ObjectProp -Object (Get-ObjectProp -Object $_ -Name 'models') -Name 'writable') } | ForEach-Object { [string](Get-ObjectProp -Object $_ -Name 'id') })
+Assert-Equal 1 $writableTools.Count ('能直接写模型的工具只有 1 个（实际：' + ($writableTools -join '、') + '）')
+Assert-Equal 'claude-code' $writableTools[0] '能直接写模型的是 Claude Code（这条写入路径真机验证过）'
+
+# 步骤链：每个工具至少 3 步，且每步都要有一句人话
+foreach ($t3 in $allTools) {
+    $tid = [string](Get-ObjectProp -Object $t3 -Name 'id')
+    $g = Get-ObjectProp -Object $t3 -Name 'guide'
+    Assert-True ($null -ne $g) ($tid + ' 有 guide 段')
+    $steps = @(Get-ObjectProp -Object $g -Name 'steps')
+    Assert-True ($steps.Count -ge 3) ($tid + ' 的步骤至少 3 步（实际 ' + $steps.Count + '）')
+    # 老格式用 do，分段式（页面按步骤排版）用 title —— 两者都算"写了做什么"
+    $noDo = @($steps | Where-Object {
+            [string](Get-ObjectProp -Object $_ -Name 'do') -eq '' -and [string](Get-ObjectProp -Object $_ -Name 'title') -eq ''
+        })
+    Assert-Equal 0 $noDo.Count ($tid + ' 每步都写了"做什么"')
+    # 分段式的 section 必须在白名单里：写错了页面会渲染出"未知段落"
+    $secs = @($steps | ForEach-Object { [string](Get-ObjectProp -Object $_ -Name 'section') } | Where-Object { $_ -ne '' })
+    $badSec = @($secs | Where-Object { @('install', 'configure', 'launch', 'packages') -notcontains $_ })
+    Assert-Equal 0 $badSec.Count ($tid + ' 的 section 都在白名单里（越界：' + ($badSec -join '、') + '）')
+    if ($secs.Count -gt 0) {
+        Assert-Equal $steps.Count $secs.Count ($tid + ' 既然用了分段式，每一步都要写 section')
+        Assert-True ($secs -contains 'install') ($tid + ' 的分段里有安装')
+        Assert-True ($secs -contains 'launch') ($tid + ' 的分段里有启动')
+        Assert-Equal $secs.Count (@($secs | Select-Object -Unique).Count) ($tid + ' 的 section 不重复')
+    }
+}
+
+# 模型模板必须用 {selectedModel}：写回 models[0] 就等于"用户在界面上选的模型不生效"
+$allModelTemplates = New-Object System.Collections.ArrayList
+foreach ($t4 in $allTools) {
+    foreach ($w in @(Get-ObjectProp -Object $t4 -Name 'writes')) {
+        if (-not $w) { continue }
+        foreach ($e in @(Get-ObjectProp -Object $w -Name 'entries')) {
+            if (-not $e) { continue }
+            $nm = [string](Get-ObjectProp -Object $e -Name 'name')
+            if ($nm -match 'MODEL|模型') { [void]$allModelTemplates.Add([string](Get-ObjectProp -Object $e -Name 'valueTemplate')) }
+        }
+    }
+}
+Assert-True ($allModelTemplates.Count -ge 5) ('登记的模型字段至少 5 个（实际 ' + $allModelTemplates.Count + '）')
+$badTpl = @($allModelTemplates | Where-Object { $_ -ne '{selectedModel}' })
+Assert-Equal 0 $badTpl.Count ('模型字段一律用 {selectedModel}，越界：' + ($badTpl -join ' | '))
+
+# 五个智能体都必须能启动、且必须有操作说明 —— 否则界面上那个「启动」按钮点下去是空的
+foreach ($t in $agents) {
+    $tid = [string](Get-ObjectProp -Object $t -Name 'id')
+    $lc = Get-ObjectProp -Object $t -Name 'launch'
+    Assert-True ($null -ne $lc) ($tid + ' 有 launch 段')
+    Assert-True (@(Get-ObjectProp -Object $lc -Name 'howTo').Count -ge 2) ($tid + ' 的 howTo 至少两步')
+}
+
+# ======================================================================
+Write-Host ''
+# ======================================================================
+Write-Host ''
+# ======================================================================
+Write-Host 'DeepSeek 官方 Claude Code 接入说明（9 个环境变量）' -ForegroundColor Cyan
+# ======================================================================
+# 这些值是从 DeepSeek 官方文档逐条抄进 providers.json 的。这里钉住"一个都不许漏、一个都不许改"，
+# 因为页面会原样展示给用户照着敲 —— 少一个或错一个，用户就配不出能用的 Claude Code。
+$providersDoc = Get-Content (Join-Path $projectRoot 'config\providers.json') -Raw -Encoding UTF8 | ConvertFrom-Json
+$dsProv = @($providersDoc.providers | Where-Object { $_.id -eq 'deepseek' })[0]
+$integration = $dsProv.integrations.'claude-code'
+Assert-True ($null -ne $integration) 'deepseek 登记了 claude-code 的官方接入说明'
+Assert-True (([string]$integration.docUrl).StartsWith('https://api-docs.deepseek.com/')) 'docUrl 指向官方文档'
+Assert-True (-not [string]::IsNullOrEmpty([string]$integration.checkedAt)) '记录了核对日期'
+$envItems = @($integration.env)
+Assert-Equal 9 $envItems.Count ('官方是 9 个变量（实际 ' + $envItems.Count + '）')
+$expectEnv = [ordered]@{
+    'ANTHROPIC_BASE_URL'              = 'https://api.deepseek.com/anthropic'
+    'ANTHROPIC_AUTH_TOKEN'            = '<你的 DeepSeek API Key>'
+    'ANTHROPIC_MODEL'                 = 'deepseek-flash[1m]'
+    'ANTHROPIC_DEFAULT_OPUS_MODEL'    = 'deepseek-flash[1m]'
+    'ANTHROPIC_DEFAULT_SONNET_MODEL'  = 'deepseek-flash[1m]'
+    'ANTHROPIC_DEFAULT_HAIKU_MODEL'   = 'deepseek-flash'
+    'CLAUDE_CODE_SUBAGENT_MODEL'      = 'deepseek-flash'
+    'CLAUDE_CODE_EFFORT_LEVEL'        = 'max'
+    'CLAUDE_CODE_AUTO_COMPACT_WINDOW' = '786432'
+}
+foreach ($ek in $expectEnv.Keys) {
+    $hit = @($envItems | Where-Object { [string]$_.name -eq $ek })
+    Assert-Equal 1 $hit.Count ('变量 ' + $ek + ' 出现一次')
+    Assert-Equal $expectEnv[$ek] ([string]$hit[0].value) ('变量 ' + $ek + ' 的值与官方一致')
+}
+# claude-code 的配置段必须标成"只给教程"，否则页面又会冒出写入按钮
+$toolsDoc = Get-Content (Join-Path $projectRoot 'config\tools.json') -Raw -Encoding UTF8 | ConvertFrom-Json
+$ccTool = @($toolsDoc.tools | Where-Object { $_.id -eq 'claude-code' })[0]
+Assert-Equal 'tutorial' ([string]$ccTool.configureMode) 'claude-code 的配置段是教程模式'
+
+
+Write-Host '模型选择（{selectedModel}）' -ForegroundColor Cyan
+# ======================================================================
+$fprov2 = [pscustomobject]@{ id = 'fake'; models = @('m-one', 'm-two') }
+Assert-Equal 'm-one' (Resolve-ConfigValue -Template '{selectedModel}' -Provider $fprov2) '不指定模型 → 渠道第一个（与旧行为一致）'
+Assert-Equal 'm-two' (Resolve-ConfigValue -Template '{selectedModel}' -Provider $fprov2 -SelectedModel 'm-two') '指定了就写指定的'
+Assert-Equal 'my-own' (Resolve-ConfigValue -Template '{selectedModel}' -Provider $fprov2 -SelectedModel 'my-own') '不在清单里的名字也原样写入（不偷偷换掉）'
+Assert-Equal '' (Resolve-ConfigValue -Template '{selectedModel}' -Provider ([pscustomobject]@{ models = @() })) '渠道没登记模型时返回空，不瞎猜'
+Assert-Equal 'prefix-m-two-suffix' (Resolve-ConfigValue -Template 'prefix-{selectedModel}-suffix' -Provider $fprov2 -SelectedModel 'm-two') '模板里嵌在中间也认'
+Write-Host ('-' * 60) -ForegroundColor DarkGray
+if ($script:Fail -eq 0) {
+    Write-Host ('全部通过：' + $script:Pass + ' 项') -ForegroundColor Green
+    exit 0
+} else {
+    Write-Host ('通过 ' + $script:Pass + ' 项，失败 ' + $script:Fail + ' 项') -ForegroundColor Red
+    foreach ($f in $script:Failures) { Write-Host ('  - ' + $f) -ForegroundColor Red }
+    exit 1
+}

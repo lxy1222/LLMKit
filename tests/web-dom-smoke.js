@@ -1,0 +1,775 @@
+/*
+ * 网页版前端的冒烟测试。
+ *
+ * 这套东西没法在这里开真浏览器，但如果只看 `node --check` 过没过，那等于什么都没验：
+ * 语法对、逻辑全错照样通过。所以这里做的是——
+ *   用一份最小 DOM 桩，把**真正的 web/assets/app.js** 跑起来，
+ *   对着**真正在跑的本地服务**发请求，然后断言渲染出来的 HTML 里有什么。
+ *
+ * 它验得到：路由、页面渲染内容、按钮是否登记、参数是否按预期组装、
+ *          会改动系统的动作是否一定先过 /api/preview 再弹确认框。
+ * 它验不到：真实浏览器里的布局、样式、事件冒泡顺序。
+ * 这两句话都写在这里，免得以后有人把这份测试当成浏览器测试。
+ *
+ * 用法：node tests/web-dom-smoke.js http://127.0.0.1:PORT [app.js 路径]
+ *   第三个参数用来对着**解压出来的发布产物**跑，验证打包进去的那份前端也是好的 ——
+ *   只测仓库里的副本，等于没测用户真正拿到的东西。
+ */
+'use strict';
+
+const fs = require('fs');
+const path = require('path');
+const vm = require('vm');
+
+const BASE = process.argv[2] || 'http://127.0.0.1:17800';
+const APP = process.argv[3] || path.join(__dirname, '..', 'web', 'assets', 'app.js');
+
+let pass = 0, fail = 0;
+const failures = [];
+
+function check(name, ok, detail) {
+  if (ok) { pass++; console.log('  [PASS] ' + name); }
+  else {
+    fail++;
+    failures.push(name);
+    console.log('  [FAIL] ' + name + (detail ? ' —— ' + detail : ''));
+  }
+}
+
+// ---------------------------------------------------------------- 最小 DOM
+const reg = new Map();          // id -> element
+const handlers = { doc: {}, win: {} };
+
+function makeEl(id) {
+  const el = {
+    id,
+    _html: '',
+    textContent: '',
+    className: '',
+    checked: false,
+    onclick: null,
+    onchange: null,
+    _attrs: {},
+    classList: {
+      _s: new Set(),
+      add(c) { this._s.add(c); },
+      remove(c) { this._s.delete(c); },
+      contains(c) { return this._s.has(c); }
+    },
+    addEventListener(t, f) { (handlers['el_' + id] = handlers['el_' + id] || {})[t] = f; },
+    setAttribute(k, v) { this._attrs[k] = v; },
+    getAttribute(k) { return Object.prototype.hasOwnProperty.call(this._attrs, k) ? this._attrs[k] : null; },
+    hasAttribute(k) { return Object.prototype.hasOwnProperty.call(this._attrs, k); },
+    closest() { return null; },
+    querySelectorAll(sel) { return scanTiers(this._html, sel); },
+    focus() { },
+    remove() { }
+  };
+  Object.defineProperty(el, 'innerHTML', {
+    get() { return this._html; },
+    set(v) {
+      this._html = String(v == null ? '' : v);
+      // 把新出现的 id 登记进来，这样 $('do-install') 之类才拿得到 —— 相当于
+      // 浏览器解析完 HTML 之后 getElementById 能找到那些节点。
+      const re = /id="([A-Za-z0-9_\-]+)"/g;
+      let m;
+      while ((m = re.exec(this._html))) {
+        if (!reg.has(m[1])) { reg.set(m[1], makeEl(m[1])); }
+      }
+    }
+  });
+  return el;
+}
+
+function scanTiers(html, sel) {
+  if (sel !== '.tier') { return []; }
+  const out = [];
+  const re = /<label class="(tier[^"]*)" data-tier="([^"]+)"/g;
+  let m;
+  while ((m = re.exec(html))) {
+    const el = makeEl('tier:' + m[2]);
+    el.className = m[1];
+    el.setAttribute('data-tier', m[2]);
+    el._attrs['data-tier'] = m[2];
+    out.push(el);
+  }
+  return out;
+}
+
+function el(id) {
+  if (!reg.has(id)) { reg.set(id, makeEl(id)); }
+  return reg.get(id);
+}
+
+// index.html 里真实存在的节点，先建出来
+['where', 'refresh', 'nav', 'app',
+  'logbox', 'logTitle', 'jobState', 'logToggle', 'log', 'modal',
+  'modalTitle', 'modalBody', 'modalCancel', 'modalOk', 'toast'].forEach(el);
+
+const documentStub = {
+  readyState: 'complete',
+  addEventListener(t, f) { handlers.doc[t] = f; },
+  getElementById(id) { return el(id); }
+};
+
+const locationStub = { hash: '#/', host: '127.0.0.1:test' };
+
+const sandbox = {
+  document: documentStub,
+  window: { addEventListener(t, f) { handlers.win[t] = f; } },
+  location: locationStub,
+  navigator: { clipboard: { writeText() { return Promise.resolve(); } } },
+  fetch: (...a) => fetch(...a),
+  setInterval: (...a) => setInterval(...a),
+  clearInterval: (...a) => clearInterval(...a),
+  setTimeout: (...a) => setTimeout(...a),
+  console,
+  Promise, JSON, String, Number, Object, Array, RegExp, Date, Math, Error
+};
+sandbox.globalThis = sandbox;
+
+// ---------------------------------------------------------------- 驱动
+let waitLabel = '';
+function waitFor(fn, ms = 8000) {
+  const label = waitLabel;
+  const t0 = Date.now();
+  return new Promise((resolve, reject) => {
+    (function loop() {
+      let v = false;
+      try { v = fn(); } catch (e) { /* 还没就绪 */ }
+      if (v) { return resolve(v); }
+      if (Date.now() - t0 > ms) {
+        return reject(new Error('等待超时（' + (label || '未标注') + '，已等 ' + Math.round((Date.now() - t0) / 1000) + ' 秒）'));
+      }
+      setTimeout(loop, 50);
+    })();
+  });
+}
+function wait(label, fn, ms) { waitLabel = label; return waitFor(fn, ms); }
+
+function setHash(h) {
+  locationStub.hash = h;
+  if (handlers.win.hashchange) { handlers.win.hashchange(); }
+}
+
+function clickDocBtn(attrs) {
+  const btn = {
+    _a: attrs,
+    getAttribute(k) { return Object.prototype.hasOwnProperty.call(this._a, k) ? this._a[k] : null; },
+    hasAttribute(k) { return Object.prototype.hasOwnProperty.call(this._a, k); }
+  };
+  const target = { closest(sel) { return sel === 'button' ? btn : null; } };
+  handlers.doc.click({ target: target });
+}
+
+const previewCalls = [];
+const launchCalls = [];
+const runCalls = [];
+
+(async function main() {
+  console.log('LLMKit 网页版前端 · 冒烟测试');
+  console.log('  服务地址：' + BASE);
+  console.log('  ' + '-'.repeat(62));
+
+  // 包一层 fetch：只记录、不改变行为。
+  // 浏览器里 app.js 用的是相对地址（/api/x），会自动相对当前页面 origin 解析；
+  // Node 的 fetch 没有 origin 概念，所以这里补上 BASE。
+  let blockRun = false;
+  const realFetch = sandbox.fetch;
+  sandbox.fetch = function (u, o) {
+    const raw = String(u);
+    const url = raw.charAt(0) === '/' ? BASE + raw : raw;
+    const body = o && o.body ? JSON.parse(o.body) : null;
+    if (url.indexOf('/api/preview') >= 0) { previewCalls.push(body); }
+    if (url.indexOf('/api/run') >= 0) { runCalls.push(body); }
+    if (url.indexOf('/api/launch') >= 0) { launchCalls.push(body); }
+    // blockRun：只验"界面发出的请求体"，不真的在服务端起任务。
+    // 配置写入的演练会去做真实端点验证（本机出网被封，可能挂十几秒），
+    // 那会把后面的用例全拖死 —— 所以这条用例故意让 /api/run 失败。
+    if (blockRun && url.indexOf('/api/run') >= 0) {
+      return Promise.resolve(new Response(JSON.stringify({ error: '测试里故意不真的起任务' }),
+        { status: 400, headers: { 'Content-Type': 'application/json' } }));
+    }
+    return realFetch(url, o);
+  };
+
+  const code = fs.readFileSync(APP, 'utf8');
+  vm.runInNewContext(code, sandbox, { filename: 'app.js' });
+
+  // --- 首页 ---
+  await wait('首页渲染', () => el('app').innerHTML.indexOf('OpenCode') >= 0);
+  const home = el('app').innerHTML;
+  console.log('首页');
+  check('渲染出十个工具', ['OpenCode', 'Claude Code', 'cc-switch', 'Codex', 'Gemini', 'DeepSeek', 'Python', 'PyCharm', 'Node.js', 'Git'].every(n => home.indexOf(n) >= 0));
+  check('工具卡片链到它自己的页面', home.indexOf('#/tool/opencode') >= 0);
+  // 分组：两个配套工具（cc-switch 管渠道、python 备环境）都不调模型，混在智能体网格里
+  // 会让人以为它们也能拿来干活。分组标题与顺序都是这一条的产品判断，钉住它。
+  const AGENT_HEAD = '智能体（你要用它们干活）';
+  const MGR_HEAD = '配套工具（备环境、管渠道，不直接调模型）';
+  check('首页把工具分成两组', home.indexOf(AGENT_HEAD) >= 0 && home.indexOf(MGR_HEAD) >= 0);
+  check('配套工具那组排在智能体之后', home.indexOf(AGENT_HEAD) < home.indexOf(MGR_HEAD));
+  const agentGroup = home.slice(home.indexOf(AGENT_HEAD), home.indexOf(MGR_HEAD));
+  check('cc-switch 不在智能体那一组里', agentGroup.indexOf('cc-switch') < 0);
+  check('python 不在智能体那一组里', agentGroup.indexOf('Python') < 0);
+  const compGroup = home.slice(home.indexOf(MGR_HEAD));
+  check('配套工具组里有 python', compGroup.indexOf('Python') >= 0);
+  check('配套工具组里有 PyCharm', compGroup.indexOf('PyCharm') >= 0);
+  check('配套工具组里有 cc-switch', compGroup.indexOf('cc-switch') >= 0);
+  check('配套工具组里有 Node.js 与 Git', compGroup.indexOf('Node.js') >= 0 && compGroup.indexOf('Git') >= 0);
+  // Node.js / Git 从单独的「运行环境」节并进这一组：所有"配套"的东西放一起
+  check('Node.js / Git 现在是工具卡片（可点进自己的页面）', compGroup.indexOf('#/tool/node') >= 0 && compGroup.indexOf('#/tool/git') >= 0);
+  check('不再单独占一节「运行环境」', home.indexOf('<h2>运行环境</h2>') < 0);
+  // 断的是按钮（id/文案），不是页面里那句'不再有一起补齐'的说明\n  check('不再有「一起补齐」的按钮', home.indexOf('act-deps') < 0 && home.indexOf('补齐 Node / Git') < 0);
+  // 环境体检按钮已经删掉了：刷新状态就是重新扫描，不再有单独的「体检」入口
+  check('首页没有独立的「环境体检」入口', home.indexOf('环境体检') < 0);
+  check('配套工具卡片说明了它管哪几个', home.indexOf('它管这几个用哪个渠道') >= 0);
+  check('配套工具那组附了"不调模型"的说明', home.indexOf('这一组自己不调模型') >= 0);
+  // 首页不显示"该做哪一步"的链条 —— 那条链挪到各智能体页（每个智能体不一样）。
+  // 所以这里反过来断言首页**没有**它，防止以后又被顺手加回来。
+  check('首页没有「下一步」引导条', home.indexOf('card nextstep') < 0 && home.indexOf('nextstep') < 0);
+  check('顶栏导航含各工具', el('nav').innerHTML.indexOf('#/tool/codex') >= 0);
+  // 顶栏顺序：智能体在前、cc-switch 在后 —— 分隔线上写着"下面是配套工具"，
+  // 它后面就只能跟配套工具。这条以前是错的（cc-switch 排在第二位），所以钉死。
+  const navHtml = el('nav').innerHTML;
+  const ccPos = navHtml.indexOf('#/tool/cc-switch');
+  check('顶栏里 cc-switch 在所有智能体之后',
+    ccPos > 0 && ['claude-code', 'codex', 'opencode', 'gemini-cli', 'dsh']
+      .every((t) => navHtml.indexOf('#/tool/' + t) > 0 && navHtml.indexOf('#/tool/' + t) < ccPos));
+  const agentLinkCount = (navHtml.match(/#\/tool\//g) || []).length;
+  check('顶栏工具链接一共十个', agentLinkCount === 10, '实际 ' + agentLinkCount);
+  check('顶栏分隔线在 cc-switch 之前', navHtml.lastIndexOf('navsep', ccPos) >= 0 && navHtml.indexOf('navsep') < ccPos);
+  // python 也是配套工具，分隔线之后、跟 cc-switch 一起
+  const pyPos = navHtml.indexOf('#/tool/python');
+  check('顶栏里 python 也在分隔线之后', pyPos > ccPos && pyPos > 0);
+  const pycharmPos = navHtml.indexOf('#/tool/pycharm');
+  check('顶栏里 pycharm 也在分隔线之后', pycharmPos > ccPos && pycharmPos > 0);
+  // 演练模式已经删掉了：没有「真的执行」开关，也没有那句模式说明
+  check('顶栏没有「真的执行」开关', !reg.has('apply') && el('nav').innerHTML.indexOf('apply') < 0);
+  check('顶栏没有演练/执行的状态说明', !reg.has('modeNote'));
+  check('首页没有「环境体检」按钮（刷新即重新扫描）', home.indexOf('环境体检') < 0 && !reg.has('act-check'));
+  check('顶栏有关闭服务的入口', reg.has('shutdown'));
+
+  // --- 工具页：opencode（未安装）---
+  console.log('工具页 · OpenCode（仿 Claude Code 的分段式）');
+  setHash('#/tool/opencode');
+  await wait('opencode 工具页渲染', () => el('app').innerHTML.indexOf('cfgProvider-opencode') >= 0 && el('app').innerHTML.indexOf('agent_integrations/opencode') >= 0, 20000);
+  const op = el('app').innerHTML;
+  const apiOp = await (await fetch(BASE + '/api/tool/opencode')).json();
+
+  check('显示工具名', op.indexOf('OpenCode') >= 0);
+  check('页面上的安装状态与接口一致',
+    (apiOp.installed && op.indexOf('已安装') >= 0) || (!apiOp.installed && op.indexOf('未安装') >= 0),
+    'installed=' + apiOp.installed);
+  check('顶部有状态一行（命令/副本/残留）', op.indexOf('class="meta toolstat"') >= 0);
+
+  // ---- 仿 Claude Code：① 装 → ② 配 → ③ 启动，数字做标题 ----
+  const ono = (ch) => op.indexOf('>' + ch + '</span>');
+  check('opencode 用分段式排版', op.indexOf('class="stepno"') >= 0);
+  check('opencode 的 ①②③ 按顺序出现',
+    ono('①') > 0 && ono('②') > ono('①') && ono('③') > ono('②'),
+    JSON.stringify({ a: ono('①'), b: ono('②'), c: ono('③') }));
+  const o1 = op.slice(ono('①'), ono('②'));
+  const o2 = op.slice(ono('②'), ono('③'));
+  const o3 = op.slice(ono('③'));
+  check('① 里是安装（有安装按钮与层）', o1.indexOf('id="do-install"') >= 0 && o1.indexOf('npm 全局安装') >= 0);
+  check('① 里有验证按钮', o1.indexOf('id="do-verify"') >= 0);
+  check('③ 里是启动', o3.indexOf('启动') >= 0);
+  check('opencode 不再有顶部"照着做"清单', op.indexOf('怎么用（照着做）') < 0);
+
+  // ---- ② 段照 DeepSeek 官方 OpenCode 文档：/connect 那几步，本工具不写文件 ----
+  check('② 段仍保留渠道选择器', o2.indexOf('cfgProvider-opencode') >= 0);
+  check('② 段给出 OpenCode 官方接入说明链接',
+    o2.indexOf('api-docs.deepseek.com/zh-cn/quick_start/agent_integrations/opencode') >= 0);
+  check('② 段第一步是升级命令', o2.indexOf('opencode upgrade') >= 0);
+  check('② 段含 /connect 这一步', o2.indexOf('/connect') >= 0);
+  check('② 段提到选 deepseek 供应商', o2.indexOf('deepseek') >= 0);
+  check('② 段提到选 DeepSeek-V4-Flash 模型', o2.indexOf('DeepSeek-V4-Flash') >= 0);
+  check('② 段有注册账号与创建 API Key 入口', o2.indexOf('注册账号') >= 0 && o2.indexOf('创建 API Key') >= 0);
+  check('② 段不再有"写入这个工具的配置"按钮', o2.indexOf('cfgWrite-opencode') < 0);
+  check('② 段不再要求填变量名/模型', o2.indexOf('cfgEnv-opencode') < 0 && o2.indexOf('cfgModel-opencode') < 0);
+  check('② 段状态如实写"需要你确认"', op.indexOf('需要你确认') >= 0);
+  check('② 段说明本工具不写它的配置文件', o2.indexOf('不写') >= 0);
+
+  // 维护区仍在（安装位置 / 配置文件明细 / 清理残留 / 卸载）
+  check('维护区折叠在最底', op.indexOf('维护与细节') >= 0 && op.indexOf('维护与细节') > ono('③'));
+  check('维护区里有卸载按钮', op.indexOf('data-act="tool-uninstall"') >= 0);
+  check('卸载说明写明只搬不删', op.indexOf('只搬不删') >= 0);
+  check('卸载默认不移除用户配置', op.indexOf('不是搬走，是真的删') >= 0);
+  check('guidance 目标标明"本工具不写它"', op.indexOf('本工具不写它') >= 0);
+  check('guidance 目标不说"只会改这几个字段"', op.indexOf('只会改这几个字段') < 0);
+
+  check('opencode 页没有写入按钮（不设自动写入）', op.indexOf('cfgWrite-') < 0);
+
+  // Claude Code：这条写入路径是验证过的，所以它应当显示"能直接写"，并显示当前实际模型
+  // 工具页每次都要现扫状态与残留，1-3 秒是常态，所以这里放宽等待（不再额外打一次接口，
+  // 那会让服务端单线程的 accept 循环被多占一次，后面的页面等待跟着超时）。
+  console.log('工具页 · Claude Code（渠道与模型）');
+  setHash('#/tool/claude-code');
+  await wait('claude-code 工具页渲染', () => el('app').innerHTML.indexOf('cfgProvider-claude-code') >= 0 && el('app').innerHTML.indexOf('ANTHROPIC_BASE_URL') >= 0, 20000);
+  const cl = el('app').innerHTML;
+check('步骤状态跟着安装状态走', cl.indexOf('该你了') >= 0 || cl.indexOf('已完成') >= 0);
+
+  // ---- claude-code 也改成分段式排版：① 装 → ② 配 → ③ 启动 ----
+  const cno = (ch) => cl.indexOf('>' + ch + '</span>');
+  check('claude-code 用分段式排版', cl.indexOf('class="stepno"') >= 0);
+  check('claude-code 的 ①②③ 按顺序出现',
+    cno('①') > 0 && cno('②') > cno('①') && cno('③') > cno('②'),
+    JSON.stringify({ a: cno('①'), b: cno('②'), c: cno('③') }));
+  const c1 = cl.slice(cno('①'), cno('②'));
+  const c2 = cl.slice(cno('②'), cno('③'));
+  const c3 = cl.slice(cno('③'));
+  check('① 里是安装（有安装按钮）', c1.indexOf('id="do-install"') >= 0);
+  check('③ 里是启动', c3.indexOf('启动') >= 0);
+  check('claude-code 不再有顶部"照着做"清单', cl.indexOf('怎么用（照着做）') < 0);
+  check('claude-code 顶部有状态一行', cl.indexOf('class="meta toolstat"') >= 0);
+
+  // ---- ② 段换成了 DeepSeek 官方那 9 个环境变量（本工具不写文件）----
+  check('② 段仍保留渠道选择器（教程随渠道变）', c2.indexOf('cfgProvider-claude-code') >= 0);
+  check('② 段给出官方接入说明的链接', cl.indexOf('api-docs.deepseek.com/zh-cn/quick_start/agent_integrations/claude_code') >= 0);
+  check('② 段有 9 行 $env: 赋值', (cl.match(/\$env:/g) || []).length >= 9, '$env: 出现 ' + (cl.match(/\$env:/g) || []).length + ' 次');
+  check('② 段带着官方 base_url', cl.indexOf('https://api.deepseek.com/anthropic') >= 0);
+  check('② 段的模型名与官方一致（deepseek-flash[1m]）', cl.indexOf('deepseek-flash[1m]') >= 0);
+  check('② 段含 CLAUDE_CODE_ 三个专用变量',
+    cl.indexOf('CLAUDE_CODE_SUBAGENT_MODEL') >= 0 && cl.indexOf('CLAUDE_CODE_EFFORT_LEVEL') >= 0 &&
+    cl.indexOf('CLAUDE_CODE_AUTO_COMPACT_WINDOW') >= 0);
+  check('② 段不再有"写入这个工具的配置"按钮', cl.indexOf('cfgWrite-claude-code') < 0);
+  check('② 段不再要求填变量名（不写文件就不需要）', cl.indexOf('cfgEnv-claude-code') < 0);
+  check('② 段说明本工具不写 settings.json', cl.indexOf('不写' ) >= 0 && cl.indexOf('settings.json') >= 0);
+  check('② 段状态如实写"需要你确认"', cl.indexOf('需要你确认') >= 0);
+  check('② 段给了"复制全部"按钮', cl.indexOf('复制全部') >= 0);
+
+  // --- 工具页：cc-switch（状态以接口为准，不假定本机装了）---
+  // 它是配套工具，页面被简化成 ①装 ②在它界面里加供应商 ③打开它 + 折叠维护区；
+  // 老排版那 9 块（含「渠道与模型」）都去掉了 —— cc-switch 自己就是管渠道的，
+  // 在它的页面上再选一次渠道、再写一次文件纯属跑题。
+  console.log('工具页 · cc-switch');
+  setHash('#/tool/cc-switch');
+  await wait('cc-switch 工具页渲染', () => el('app').innerHTML.indexOf('class="stepno"') >= 0, 20000);
+  const cc = el('app').innerHTML;
+  const kno = (ch) => cc.indexOf('>' + ch + '</span>');
+  // 换台机器可能没装它 —— 断言对照接口返回，而不是假定本机状态
+  const apiCc = await (await fetch(BASE + '/api/tool/cc-switch')).json();
+  check('安装状态与接口一致',
+    (apiCc.installed && cc.indexOf('已安装') >= 0) || (!apiCc.installed && cc.indexOf('未安装') >= 0),
+    'installed=' + apiCc.installed);
+  check('安装入口一直都在（已装时叫重装）',
+    reg.has('do-install') && (apiCc.installed ? cc.indexOf('重装') >= 0 : cc.indexOf('安装') >= 0),
+    'installed=' + apiCc.installed);
+  check('列出安装位置表格', cc.indexOf('<table class="tbl">') >= 0);
+  check('cc-switch 的 GitHub 发布层可见', cc.indexOf('github-release') >= 0 || cc.indexOf('GitHub') >= 0);
+  // 工具页也要标出角色：用户从首页点进来后，这一页得自己说清"我不是智能体"
+  check('配套工具页标了角色', cc.indexOf('配套工具 · 帮你管渠道') >= 0);
+  check('配套工具页说清它管哪几个智能体', cc.indexOf('自己不调模型') >= 0 && cc.indexOf('Claude Code') >= 0);
+
+  // 简化后的形态：三段式，且 ② 是在它界面里加供应商
+  check('cc-switch 用分段式排版（不再是老排版）', cc.indexOf('怎么用（照着做）') < 0);
+  check('cc-switch 的 ①②③ 按顺序出现',
+    kno('①') > 0 && kno('②') > kno('①') && kno('③') > kno('②'),
+    JSON.stringify({ a: kno('①'), b: kno('②'), c: kno('③') }));
+  const k2 = cc.slice(kno('②'), kno('③'));
+  check('② 段标题是「在它界面里加供应商」', k2.indexOf('在它界面里加供应商') >= 0);
+  check('② 段给出添加供应商这一步', k2.indexOf('添加供应商') >= 0);
+  check('② 段给出 Enable 这一步', k2.indexOf('Enable') >= 0);
+  check('② 段说明它会去写哪几个工具的配置', k2.indexOf('Claude Code') >= 0 && k2.indexOf('Gemini CLI') >= 0);
+  check('② 段给出可复制的值', k2.indexOf('data-copy=') >= 0 && k2.indexOf('Base URL') >= 0);
+  check('② 段没有写入按钮', k2.indexOf('cfgWrite-cc-switch') < 0);
+  check('③ 段是「打开它」', cc.slice(kno('③')).indexOf('打开它') >= 0);
+  check('③ 段有启动按钮', cc.indexOf('data-launch="cc-switch"') >= 0);
+  // 老排版的臃肿块不许回来
+  check('没有「存 key 的变量名」输入框（它不负责存 key）', cc.indexOf('存 key 的变量名') < 0);
+  // 这个词在折叠维护区里还会出现（那是它该在的地方），所以断言的是它没有独立成节
+  check('没有独立的「这个工具自己的配置」一节', cc.indexOf('<h2>这个工具自己的配置</h2>') < 0);
+  check('没有单独的「可用操作」块', cc.indexOf('<h2>可用操作</h2>') < 0);
+  check('维护区折叠在最底', cc.indexOf('维护与细节') > kno('③'));
+
+  // --- Codex：② 段照 DeepSeek 官方「一键配置脚本」给步骤 ---
+  console.log('工具页 · Codex');
+  setHash('#/tool/codex');
+  await wait('codex 工具页渲染', () => el('app').innerHTML.indexOf('cfgProvider-codex') >= 0, 20000);
+  const cx = el('app').innerHTML;
+  const xno = (ch) => cx.indexOf('>' + ch + '</span>');
+  check('codex 用分段式排版', cx.indexOf('class="stepno"') >= 0 && cx.indexOf('怎么用（照着做）') < 0);
+  check('codex 的 ①②③ 按顺序出现',
+    xno('①') > 0 && xno('②') > xno('①') && xno('③') > xno('②'),
+    JSON.stringify({ a: xno('①'), b: xno('②'), c: xno('③') }));
+  check('codex ① 里是安装', cx.slice(xno('①'), xno('②')).indexOf('id="do-install"') >= 0);
+  const x2 = cx.slice(xno('②'), xno('③'));
+  check('codex ② 里给出官方一键脚本命令', x2.indexOf('codex-deepseek-setup.ps1') >= 0);
+  check('codex ② 里标出官方文档依据', x2.indexOf('agent_integrations/codex') >= 0);
+  check('codex ② 里说清菜单选项', x2.indexOf('还原成默认') >= 0);
+  check('codex ② 里说明联网搜索只在 v4-pro 下可用', x2.indexOf('deepseek-v4-pro') >= 0);
+  check('codex ② 没有自动写入按钮', x2.indexOf('cfgWrite-codex') < 0);
+
+  // --- Gemini CLI：DeepSeek 官方没有它的接入说明，它的渠道交给 cc-switch 管 ---
+  console.log('工具页 · Gemini CLI');
+  setHash('#/tool/gemini-cli');
+  await wait('gemini 工具页渲染', () => el('app').innerHTML.indexOf('cfgProvider-gemini-cli') >= 0, 20000);
+  const gm = el('app').innerHTML;
+  const gno = (ch) => gm.indexOf('>' + ch + '</span>');
+  check('gemini-cli 也用分段式排版', gm.indexOf('class="stepno"') >= 0 && gm.indexOf('怎么用（照着做）') < 0);
+  check('gemini-cli 的 ①②③ 按顺序出现',
+    gno('①') > 0 && gno('②') > gno('①') && gno('③') > gno('②'),
+    JSON.stringify({ a: gno('①'), b: gno('②'), c: gno('③') }));
+  const g2 = gm.slice(gno('②'), gno('③'));
+  check('② 这一段的标题就是「用 cc-switch 改渠道」', g2.indexOf('用 cc-switch 改渠道') >= 0);
+  // 步骤照 cc-switch 自己的用法写：左边栏选 Gemini CLI → + 添加供应商 → Enable → 重开终端
+  check('② 里说清在 cc-switch 里选 Gemini CLI 那一档', g2.indexOf('Gemini CLI') >= 0);
+  check('② 里给出「添加供应商」这一步', g2.indexOf('添加供应商') >= 0);
+  check('② 里给出 Enable 这一步（Switch 模式）', g2.indexOf('Enable') >= 0);
+  check('② 里说清要重开终端才生效', g2.indexOf('重开终端') >= 0);
+  check('② 里给出 cc-switch 的仓库外链', g2.indexOf('github.com/farion1231/cc-switch') >= 0);
+  // 要填进 cc-switch 的值仍然给出来（渠道与模型会跟着选择器变）
+  check('② 里给出可复制的 Base URL 与模型', g2.indexOf('data-copy=') >= 0 && g2.indexOf('Base URL') >= 0);
+  check('② 里不含任何 key 值', g2.indexOf('sk-') < 0);
+  check('② 没有自动写入按钮', g2.indexOf('cfgWrite-gemini-cli') < 0);
+  check('③ 里是启动', gm.slice(gno('③')).indexOf('启动') >= 0);
+
+  // --- Python：配套工具里的"备环境"那一半。只给步骤与链接，本工具不代为安装 ---
+  console.log('工具页 · Python');
+  setHash('#/tool/python');
+  await wait('python 工具页渲染', () => el('app').innerHTML.indexOf('class="stepno"') >= 0, 20000);
+  const py = el('app').innerHTML;
+  const apiPy = await (await fetch(BASE + '/api/tool/python')).json();
+  const pno = (ch) => py.indexOf('>' + ch + '</span>');
+  check('python 用分段式排版', py.indexOf('class="stepno"') >= 0 && py.indexOf('怎么用（照着做）') < 0);
+  check('python 的 ①②③ 按顺序出现',
+    pno('①') > 0 && pno('②') > pno('①') && pno('③') > pno('②'),
+    JSON.stringify({ a: pno('①'), b: pno('②'), c: pno('③') }));
+  const p1 = py.slice(pno('①'), pno('②'));
+  const p2 = py.slice(pno('②'), pno('③'));
+  check('① 段给出官方下载页', p1.indexOf('python.org/downloads') >= 0);
+  check('① 段强调要勾 Add python.exe to PATH', p1.indexOf('Add python.exe to PATH') >= 0);
+  check('① 段标明需手动（不替你跑第三方安装器）', p1.indexOf('不替你') >= 0 || p1.indexOf('需手动') >= 0);
+  check('② 段给出 pip 镜像命令（只给建议）', p2.indexOf('pip config set global.index-url') >= 0);
+  check('② 段给出查看当前源的命令', p2.indexOf('pip config list') >= 0);
+  check('② 段说明本工具不写 pip 配置', p2.indexOf('不执行') >= 0);
+  // 配 pip 镜像跟渠道无关：不许凭空冒出一个渠道选择器
+  check('② 段没有渠道选择器', py.indexOf('cfgProvider-python') < 0);
+  check('② 段没有写入按钮', py.indexOf('cfgWrite-python') < 0);
+  check('③ 段是启动（进 REPL）', py.slice(pno('③')).indexOf('启动') >= 0);
+  // 卸载：官方安装器装的，本工具不搬它的文件 —— 只给说明，不给按钮
+  check('没有卸载按钮（不由本工具卸载）', py.indexOf('data-act="tool-uninstall"') < 0);
+  check('写明为什么不能卸载', py.indexOf('这个工具不由本工具卸载') >= 0);
+  check('维护区折叠在最底', py.indexOf('维护与细节') > pno('③'));
+
+  // ④ 常用第三方库：只检测、不装包
+  const p4 = py.slice(pno('④'));
+  check('python 有 ④ 常用第三方库这一段', pno('④') > pno('③') && p4.length > 0);
+  check('④ 段列出常用库', p4.indexOf('requests') >= 0 && p4.indexOf('numpy') >= 0);
+  check('④ 段给出每个库的判断状态', p4.indexOf('已装') >= 0 || p4.indexOf('未安装') >= 0);
+  check('④ 段给可复制的安装命令', p4.indexOf('pip install ') >= 0);
+  check('④ 段说明本工具不替你装包', p4.indexOf('只检测') >= 0);
+
+  // 多副本冲突：检测出来还要能修 —— 有按钮、说清保留谁、挪走谁
+  if (apiPy.conflict) {
+    check('有冲突时给出「合并多份副本」按钮', py.indexOf('id="do-conflict"') >= 0);
+    check('有冲突时说明会保留哪一份', py.indexOf('会保留：') >= 0);
+    check('有冲突时列出会挪走的那几份', py.indexOf('会挪到备份区') >= 0 && (apiPy.conflictMove || []).length > 0);
+    check('冲突按钮不算成自动写入', py.indexOf('cfgWrite-python') < 0);
+  } else {
+    console.log('  （本机 python 没有多副本共存，跳过冲突按钮断言）');
+  }
+
+  // --- PyCharm：配套工具里的 IDE，官方安装器手动装 ---
+  console.log('工具页 · PyCharm');
+  setHash('#/tool/pycharm');
+  await wait('pycharm 工具页渲染', () => el('app').innerHTML.indexOf('class="stepno"') >= 0, 20000);
+  const pc = el('app').innerHTML;
+  const qno = (ch) => pc.indexOf('>' + ch + '</span>');
+  check('pycharm 用分段式排版', pc.indexOf('class="stepno"') >= 0 && pc.indexOf('怎么用（照着做）') < 0);
+  check('pycharm 的 ①②③ 按顺序出现',
+    qno('①') > 0 && qno('②') > qno('①') && qno('③') > qno('②'),
+    JSON.stringify({ a: qno('①'), b: qno('②'), c: qno('③') }));
+  const q1 = pc.slice(qno('①'), qno('②'));
+  const q2 = pc.slice(qno('②'), qno('③'));
+  check('① 段给官方下载页链接', q1.indexOf('jetbrains.com/pycharm/download') >= 0);
+  check('① 段说明可以下免安装 zip', q1.indexOf('zip') >= 0);
+  check('② 段讲的是指定解释器', q2.indexOf('Python Interpreter') >= 0);
+  check('② 段给出具体菜单路径', q2.indexOf('Add Interpreter') >= 0);
+  check('② 段没有渠道选择器', pc.indexOf('cfgProvider-pycharm') < 0);
+  check('② 段没有写入按钮', pc.indexOf('cfgWrite-pycharm') < 0);
+  check('③ 段是打开它', pc.slice(qno('③')).indexOf('启动') >= 0);
+  check('pycharm 不给卸载按钮', pc.indexOf('data-act="tool-uninstall"') < 0);
+  check('pycharm 写清了为什么不卸载', pc.indexOf('这个工具不由本工具卸载') >= 0);
+  check('维护区折叠在最底（pycharm）', pc.indexOf('<section class="maint"') > qno('③'),
+    'maint=' + pc.indexOf('<section class="maint"') + ' no3=' + qno('③'));
+
+  // --- Node.js / Git：从"依赖"升格成工具，各有自己的页面 ---
+  console.log('工具页 · Node.js');
+  setHash('#/tool/node');
+  await wait('node 工具页渲染', () => el('app').innerHTML.indexOf('class="stepno"') >= 0, 20000);
+  const nd = el('app').innerHTML;
+  const nno = (ch) => nd.indexOf('>' + ch + '</span>');
+  check('node 用分段式排版', nd.indexOf('class="stepno"') >= 0 && nd.indexOf('怎么用（照着做）') < 0);
+  check('node 的 ①②③ 按顺序出现',
+    nno('①') > 0 && nno('②') > nno('①') && nno('③') > nno('②'),
+    JSON.stringify({ a: nno('①'), b: nno('②'), c: nno('③') }));
+  const n1 = nd.slice(nno('①'), nno('②'));
+  const n2 = nd.slice(nno('②'), nno('③'));
+  check('① 段列出两种安装层（便携版 + winget）', n1.indexOf('portable-zip') >= 0 && n1.indexOf('winget') >= 0);
+  check('① 段标明便携层不需要管理员', n1.indexOf('不需要管理员') >= 0);
+  check('② 段讲的是 npm 镜像', n2.indexOf('npm config set registry') >= 0);
+  check('② 段没有渠道选择器', nd.indexOf('cfgProvider-node') < 0);
+  check('③ 段是启动（进 node 交互环境）', nd.slice(nno('③')).indexOf('启动') >= 0);
+  check('node 有卸载按钮（现在能卸了）', nd.indexOf('data-act="tool-uninstall"') >= 0);
+
+  console.log('工具页 · Git');
+  setHash('#/tool/git');
+  await wait('git 工具页渲染', () => el('app').innerHTML.indexOf('class="stepno"') >= 0, 20000);
+  const gt = el('app').innerHTML;
+  const gno2 = (ch) => gt.indexOf('>' + ch + '</span>');
+  check('git 用分段式排版', gt.indexOf('class="stepno"') >= 0 && gt.indexOf('怎么用（照着做）') < 0);
+  const git2 = gt.slice(gno2('②'), gno2('③'));
+  const git3 = gt.slice(gno2('③'));
+  check('② 段讲的是 user.name / user.email / safe.directory', git2.indexOf('user.name') >= 0 && git2.indexOf('safe.directory') >= 0);
+  check('③ 段的标题就说明它没有交互界面', git3.indexOf('验证') >= 0);
+  check('③ 段的启动按钮被禁用（不是点了没反应）', git3.indexOf('disabled') >= 0);
+  check('③ 段给出了禁用原因', gt.indexOf('没有可以常驻的窗口') >= 0);
+  check('git 有卸载按钮', gt.indexOf('data-act="tool-uninstall"') >= 0);
+
+  // --- 第 6 个工具：DeepSeek Harness ---
+  console.log('工具页 · DeepSeek Harness');
+  setHash('#/tool/dsh');
+  await wait('dsh 工具页渲染', () => el('app').innerHTML.indexOf('DeepSeek Harness') >= 0, 20000);
+  const ds = el('app').innerHTML;
+  check('显示工具名', ds.indexOf('DeepSeek Harness') >= 0);
+  check('列出 npm 安装层', ds.indexOf('@deepseek-ai/dsh') >= 0);
+  check('标明不需要管理员', ds.indexOf('不需要管理员') >= 0);
+  check('有安装按钮', reg.has('do-install'));
+  check('有卸载按钮', ds.indexOf('data-act="tool-uninstall"') >= 0);
+  check('凭据目标标明本工具不写它', ds.indexOf('本工具不写它') >= 0);
+  check('不把私有格式说成"只会改这几个字段"', ds.indexOf('只会改这几个字段') < 0);
+  check('给出凭据文件路径', ds.indexOf('.credentials.yaml') >= 0);
+
+  // ---- 分段式排版（目前只有 dsh 走这套）：页面本身就是步骤 ----
+  check('dsh 用分段式排版（有编号标题）', ds.indexOf('class="stepno"') >= 0);
+  const noPos = (ch) => ds.indexOf('>' + ch + '</span>');
+  check('编号 ①②③ 都在，且按顺序出现',
+    noPos('①') > 0 && noPos('②') > noPos('①') && noPos('③') > noPos('②'),
+    JSON.stringify({ a: noPos('①'), b: noPos('②'), c: noPos('③') }));
+  const seg1 = ds.slice(noPos('①'), noPos('②'));
+  const seg2 = ds.slice(noPos('②'), noPos('③'));
+  const seg3 = ds.slice(noPos('③'));
+  check('① 里是安装（有安装按钮）', seg1.indexOf('id="do-install"') >= 0);
+  check('① 里也有"验证可用性"', seg1.indexOf('id="do-verify"') >= 0);
+  check('② 里是启动（dsh 的顺序：装完先把它跑起来）', seg2.indexOf('data-launch="dsh"') >= 0);
+  // dsh 是服务型工具：启动命令必须带 web 子命令，并且带上我们选定的端口
+  check('启动命令带上了 web 子命令', seg2.indexOf(' web') >= 0);
+  check('启动命令带上 --port', seg2.indexOf('--port') >= 0);
+  check('启动段显示了预计地址', seg2.indexOf('预计地址：http://127.0.0.1:') >= 0);
+  check('③ 里是配置（有渠道与模型选择）', seg3.indexOf('cfgProvider-dsh') >= 0);
+  // dsh 全是 guidance 目标 → 本工具一个字节都不写 → 不给"写入"按钮，只给可复制的值
+  check('③ 不给写入按钮（本工具不写 dsh 的配置）', seg3.indexOf('cfgWrite-dsh') < 0);
+  check('③ 给出可复制的 Base URL 与模型', seg3.indexOf('data-copy=') >= 0 && seg3.indexOf('要填到') >= 0);
+  check('分段式下不再有顶部"照着做"清单', ds.indexOf('怎么用（照着做）') < 0);
+  check('顶部有状态一行（命令/副本/残留）', ds.indexOf('class="meta toolstat"') >= 0);
+  check('维护区折叠在最底', ds.indexOf('维护与细节') >= 0);
+  check('维护区在最后一段之后', ds.indexOf('维护与细节') > noPos('③'));
+
+  // 反向断言：其它工具仍是老排版（不然就是"只改 dsh"没守住）
+  check('opencode 现在也是分段式（不再是老排版）', op.indexOf('class="stepno"') >= 0 && op.indexOf('怎么用（照着做）') < 0);
+
+  // --- 未知页面 ---
+  console.log('路由');
+  setHash('#/nope/nope');
+  await new Promise(r => setTimeout(r, 200));
+  check('未知地址给出提示而不是白屏', el('app').innerHTML.indexOf('没有这个页面') >= 0);
+
+  // --- W4：渠道 / 配置 / 诊断 / 历史 ---
+  console.log('渠道页');
+  setHash('#/providers');
+  await wait('渠道页渲染', () => el('app').innerHTML.indexOf('不内置、不代发、不代充') >= 0, 20000);
+  const pv = el('app').innerHTML;
+  check('列出多个渠道', (pv.match(/<div class="card">/g) || []).length >= 5,
+    '卡片数=' + (pv.match(/<div class="card">/g) || []).length);
+  check('写明不内置/不代发/不代充 key', pv.indexOf('不内置、不代发、不代充') >= 0);
+  check('给出注册或领 key 的外链', pv.indexOf('target="_blank"') >= 0 && pv.indexOf('注册账号') >= 0);
+  // 渠道页不再直接跳到"配置页"：配置写在各自智能体页里
+  check('渠道页不再有"用这个渠道配置"按钮', pv.indexOf('data-cfg=') < 0);
+  check('渠道页说明了去智能体页配置', pv.indexOf('配置在各自智能体页里') >= 0);
+  check('渠道页不含任何 key 值', pv.indexOf('sk-') < 0);
+
+  console.log('旧的配置页地址');
+  setHash('#/config?provider=deepseek');
+  await wait('配置搬走页渲染', () => el('app').innerHTML.indexOf('配置搬走了') >= 0, 20000);
+  const cf = el('app').innerHTML;
+  check('不再有全局配置页（没有写入配置按钮）', !reg.has('do-config'));
+  check('解释页说明配置去了哪', cf.indexOf('所以配置现在写在每个智能体自己的页面上') >= 0);
+  check('解释页给出进各智能体页的路子', cf.indexOf('从顶栏选一个智能体进去') >= 0 || (cf.indexOf('#/tool/claude-code') >= 0 && cf.indexOf('#/tool/dsh') >= 0));
+  check('导航里已经没有「配置」', el('nav').innerHTML.indexOf('#/config') < 0);
+  check('解释页里不带任何 key 值', cf.indexOf('sk-') < 0);
+  console.log('诊断页');
+  setHash('#/diagnose');
+  await wait('诊断页渲染', () => el('app').innerHTML.indexOf('生成诊断报告') >= 0, 30000);
+  await wait('诊断正文已载入', () => (el('diagText') && String(el('diagText').textContent).length > 200) ||
+    el('app').innerHTML.indexOf('还没有生成过诊断报告') >= 0, 30000);
+  const dg = el('app').innerHTML;
+  check('有生成报告按钮', reg.has('do-diag'));
+  check('写明报告已脱敏', dg.indexOf('自动脱敏') >= 0);
+  const dgText = el('diagText') ? String(el('diagText').textContent) : '';
+  if (dgText) {
+    check('报告正文确实取到了', dgText.length > 200, '长度=' + dgText.length);
+    check('报告正文不含本机用户名', dgText.indexOf(process.env.USERNAME) < 0);
+    check('有复制全文按钮', reg.has('copyDiag'));
+  } else {
+    check('（本机还没有报告，跳过正文断言）', true);
+  }
+
+  console.log('历史页');
+  setHash('#/history');
+  await wait('历史页渲染', () => el('app').innerHTML.indexOf('会话历史') >= 0);
+  const hs = el('app').innerHTML;
+  check('列出会话或给出空状态说明', hs.indexOf('data-restore=') >= 0 || hs.indexOf('还没有会话记录') >= 0);
+  check('写明还原也是只搬不删', hs.indexOf('只搬不删') >= 0);
+  const restoreCount = (hs.match(/data-restore="/g) || []).length;
+  console.log('  （本机有 ' + restoreCount + ' 条会话记录）');
+
+  // --- 启动：六个工具各自的命令，以及"点下去会弹什么" ---
+  console.log('启动区');
+  setHash('#/tool/opencode');
+  await wait('opencode 工具页（启动）', () => el('app').innerHTML.indexOf('怎么启动、怎么用') >= 0);
+  const lz = el('app').innerHTML;
+  check('工具页有启动区（分段式：③ 启动）', /③[^<]*<\/span>启动/.test(lz) || lz.indexOf('<h2>启动</h2>') >= 0);
+  check('已装工具给可用的启动按钮', /data-launch="opencode"[^>]*data-mode="interactive"/.test(lz));
+  check('给出「怎么启动、怎么用」说明', lz.indexOf('怎么启动、怎么用') >= 0);
+  check('给出可复制的启动命令', lz.indexOf('启动命令：') >= 0);
+  check('给出跑冒烟的入口', lz.indexOf('跑一次冒烟') >= 0);
+
+  launchCalls.length = 0;
+  clickDocBtn({ 'data-launch': 'opencode', 'data-mode': 'interactive', 'data-name': 'OpenCode' });
+  await wait('启动确认框弹出', () => el('modal').classList.contains('show'));
+  const dry = launchCalls[launchCalls.length - 1];
+  check('点启动先向服务端要命令（dryRun）', !!dry && dry.dryRun === true && dry.toolId === 'opencode', JSON.stringify(dry));
+  // 安全边界：启动请求体里只能有这三个字段，不能出现路径 / 命令 / 参数
+  check('启动请求体只有 toolId / mode / dryRun', Object.keys(dry).sort().join(',') === 'dryRun,mode,toolId', Object.keys(dry).join(','));
+  check('确认框里是要跑的命令原文', el('modalBody').innerHTML.indexOf('cmd.exe /k') >= 0);
+  check('确认框说明会开一个新窗口', el('modalBody').innerHTML.indexOf('新窗口') >= 0);
+  el('modalCancel').onclick();
+  await new Promise(r => setTimeout(r, 150));
+  check('取消后没有真的启动', launchCalls.filter(c => !c.dryRun).length === 0);
+
+  // 启动按钮的可用性必须和接口状态一致：没装就禁用并写明原因，装了就能点。
+  // （这一段以前写死"claude-code 没装"，机器上装好之后它就误报了。）
+  setHash('#/tool/claude-code');
+  await wait('claude-code 工具页（启动）', () => el('app').innerHTML.indexOf('怎么启动、怎么用') >= 0);
+  const lz2 = el('app').innerHTML;
+  const apiCl2 = await (await fetch(BASE + '/api/tool/claude-code')).json();
+  check('启动按钮的可用性与接口状态一致',
+    apiCl2.installed ? lz2.indexOf('data-launch' + '="claude-code"') >= 0
+                     : lz2.indexOf('<button disabled') >= 0,
+    'installed=' + apiCl2.installed);
+  check('没装时写明不能启动的原因', apiCl2.installed || lz2.indexOf('还没装') >= 0);
+  check('照样给出怎么启动的说明', lz2.indexOf('怎么启动、怎么用') >= 0);
+
+  // 首页卡片：已装的才给启动
+  setHash('#/');
+  await wait('首页（启动）', () => el('app').innerHTML.indexOf('data-launch=') >= 0);
+  check('首页上已装的工具卡片有启动按钮', /data-launch="(opencode|dsh|cc-switch)"/.test(el('app').innerHTML));
+check('首页卡片的启动按钮与安装状态一致', apiCl2.installed || el('app').innerHTML.indexOf('data-launch="claude-code"') < 0);
+
+  // 从这里开始要真的在服务端跑任务了 —— 把"拦住 /api/run"的开关关掉。
+  blockRun = false;
+
+  // --- 只读体检：结论断言放在这里，因为它不依赖网络、结论是确定的 ---
+  console.log('真实任务：只读的「验证可用性」');
+  setHash('#/tool/opencode');
+  await wait('opencode 工具页（验证）', () => el('app').innerHTML.indexOf('id="do-verify"') >= 0, 20000);
+  const endsBefore = (el('log').textContent.match(/== 结束：/g) || []).length;
+  el('do-verify').onclick();
+  await wait('只读验证任务结束', () => (el('log').textContent.match(/== 结束：/g) || []).length > endsBefore, 120000);
+  const verdictTail = el('log').textContent.split('== 结束：').pop().split('\n')[0];
+  check('只读验证给出确定结论', verdictTail.indexOf('已结束') < 0, '结论=' + verdictTail);
+  check('日志区收到引擎输出', el('log').textContent.indexOf('LLMKit') >= 0);
+
+  // --- 没有演练模式了：改动型动作一律先确认，且命令是服务端给的原文 ---
+  console.log('改动前确认（改动型动作必须弹框）');
+  setHash('#/tool/opencode');
+  await waitFor(() => el('app').innerHTML.indexOf('id="do-install"') >= 0);
+  previewCalls.length = 0; runCalls.length = 0;
+  el('do-install').onclick();
+  await wait('执行模式确认框弹出', () => el('modal').classList.contains('show'));
+  check('执行模式下弹出确认框', el('modal').classList.contains('show'));
+  check('确实先问了服务端要命令', previewCalls.length === 1 && previewCalls[0].apply === true);
+  const mbody = el('modalBody').innerHTML;
+  check('确认框里的命令是服务端给的原文', mbody.indexOf('Setup-LLMKit.ps1') >= 0);
+  check('确认框里的命令带真实参数', mbody.indexOf('-OnlyTools') >= 0 && mbody.indexOf('-OnlyTiers') >= 0, mbody.slice(0, 200));
+  check('确认框写明会真的改动系统', mbody.indexOf('真的改动') >= 0);
+  check('确认框弹出时尚未执行', runCalls.length === 0);
+
+  // 取消 → 不许跑
+  el('modalCancel').onclick();
+  await new Promise(r => setTimeout(r, 200));
+  check('取消后什么都没执行', runCalls.length === 0);
+  check('取消后确认框关闭', !el('modal').classList.contains('show'));
+
+  // 卸载按钮也要走同一条路
+  clickDocBtn({ 'data-act': 'tool-uninstall', 'data-target': 'opencode' });
+  await wait('卸载确认框弹出', () => el('modal').classList.contains('show'));
+  check('卸载同样要确认', el('modal').classList.contains('show'));
+  check('卸载确认框给出真实命令', el('modalBody').innerHTML.indexOf('-Uninstall opencode') >= 0);
+  check('卸载默认不带移除用户配置', previewCalls[previewCalls.length - 1].removeUserConfig === undefined);
+  el('modalCancel').onclick();
+
+  // --- 配置写入：这一轮之后 tutorial 页面上**没有**任何自动写入入口，把这条契约钉死 ---
+  // （claude-code / opencode / codex 走官方教程；gemini 没有官方接入说明，② 仍是渠道卡片，命令行的 -Configure 也保留）
+  console.log('tutorial 页面没有自动写入入口');
+  let writeButtons = 0;
+  for (const tid of ['claude-code', 'opencode', 'codex']) {
+    setHash('#/tool/' + tid);
+    await wait('工具页渲染 ' + tid, () => el('app').innerHTML.indexOf('cfgProvider-') >= 0, 20000);
+    if (el('app').innerHTML.indexOf('cfgWrite-') >= 0) { writeButtons++; }
+  }
+  check('tutorial 的三个页面没有写入按钮', writeButtons === 0, '有写入按钮的页数=' + writeButtons);
+  check('tutorial 页面不出现「写入这个工具的配置」字样', el('app').innerHTML.indexOf('写入这个工具的配置') < 0);
+
+  // --- 还原：命令里要看得到它打算还原哪一份会话 ---
+  if (restoreCount > 0) {
+    console.log('还原的确认框');
+    setHash('#/history');
+    await wait('历史页（执行模式）', () => el('app').innerHTML.indexOf('data-restore=') >= 0);
+    const mPath = /data-restore="([^"]+)"/.exec(el('app').innerHTML);
+    const sessPath = mPath ? mPath[1] : '';
+    check('拿到了会话日志路径', sessPath.length > 0);
+    previewCalls.length = 0; runCalls.length = 0;
+    clickDocBtn({ 'data-restore': sessPath, 'data-session': '' });
+    await wait('还原确认框弹出', () => el('modal').classList.contains('show'));
+    check('还原要确认', el('modal').classList.contains('show'));
+    check('确认框命令是 -Restore 那条', el('modalBody').innerHTML.indexOf('-Restore') >= 0);
+    const rBody = previewCalls[previewCalls.length - 1];
+    check('还原请求指向这份会话', rBody.actionId === 'restore' && rBody.targetId === sessPath,
+      JSON.stringify({ a: rBody.actionId, t: rBody.targetId }));
+    el('modalCancel').onclick();
+    await new Promise(r => setTimeout(r, 100));
+    check('取消后没有执行还原', runCalls.length === 0);
+  } else {
+    console.log('  （本机没有会话记录，跳过还原确认框的断言）');
+  }
+
+  // --- 演练模式删掉之后：每个改动型动作都要先确认，没有例外（刻意放最后）---
+  // 这一段会走一次完整的 preview → 确认框 → 执行链路，所以放最后，不让它拖累前面的断言。
+  console.log('每次改动都要确认（演练模式已删除）');
+  setHash('#/tool/opencode');
+  await wait('opencode 工具页（确认链路）', () => el('app').innerHTML.indexOf('id="do-install"') >= 0, 20000);
+  previewCalls.length = 0; runCalls.length = 0;
+  el('do-install').onclick();
+  await wait('安装确认框弹出', () => el('modal').classList.contains('show'));
+  const pv1 = previewCalls[0];
+  check('点安装先调 /api/preview', previewCalls.length === 1);
+  check('预览带上选中的安装层', pv1.tierId === 'npm-global', JSON.stringify(pv1));
+  check('预览明确会真的执行（apply=true）', pv1.apply === true, JSON.stringify(pv1));
+  check('确认框弹出时还没执行', runCalls.length === 0);
+  // 确认 → 真的发 /api/run
+  el('modalOk').onclick();
+  await wait('确认后真的发出 /api/run', () => runCalls.length > 0);
+  check('确认后发出 /api/run', runCalls.length === 1);
+  check('发的请求带 apply=true', runCalls[0] && runCalls[0].apply === true, JSON.stringify(runCalls[0]));
+
+  console.log('  ' + '-'.repeat(62));
+  console.log('通过 ' + pass + ' 项，失败 ' + fail + ' 项');
+  if (fail) { console.log('失败项：\n  - ' + failures.join('\n  - ')); }
+  process.exit(fail ? 1 : 0);
+})().catch(e => {
+  console.log('  [FAIL] 冒烟测试异常终止：' + e.message);
+  console.log(e.stack);
+  process.exit(1);
+});

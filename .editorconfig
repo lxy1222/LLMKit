@@ -1,0 +1,35 @@
+# 交给编辑器自己把格式做对。
+#
+# 为什么需要这个文件：docs/DEVLOG.md 第 1 条那个坑 —— PowerShell 5.1 读无 BOM 的
+# UTF-8 文件会按 ANSI 解码，中文全成乱码、连语法都过不了，项目里踩过四次。
+# 以前靠人记，现在让编辑器自动做对；CI 里还有一道检查兜底。
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+indent_style = space
+indent_size = 4
+
+# PowerShell 脚本必须带 BOM，且 .gitattributes 里定的是 CRLF
+[*.{ps1,psm1}]
+charset = utf-8-bom
+end_of_line = crlf
+
+# 批处理必须是 CRLF：cmd.exe 对 LF 结尾的 .cmd 在某些情况下会解析出怪问题
+[*.{cmd,bat}]
+end_of_line = crlf
+
+# 这些在别的平台上也要能直接读，一律 LF（与 .gitattributes 一致）
+[*.{json,md,yml,yaml,js,css,html,go,mod}]
+end_of_line = lf
+
+[*.cs]
+end_of_line = crlf
+
+# 生成物与第三方目录不用管格式
+[build/dist/**]
+insert_final_newline = false
+trim_trailing_whitespace = false

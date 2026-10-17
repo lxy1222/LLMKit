@@ -1,0 +1,48 @@
+name: 提个建议
+description: 想加工具、加渠道、改行为
+labels: [enhancement]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        先看一眼 `README.md` 的「安全边界」与「免责」两节 ——
+        不内置/代发/代充任何 Key、不做中转代理、不绕过付费或授权机制。这类建议会被直接关掉。
+
+  - type: dropdown
+    id: kind
+    attributes:
+      label: 属于哪一类
+      options:
+        - 加一个新的 AI 工具
+        - 加一个新的 API 渠道
+        - 改现有行为
+        - 加一条错误翻译规则
+        - 文档 / 开发体验
+        - 其他
+    validations:
+      required: true
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: 你想解决什么问题
+      description: 说清楚"卡在哪"，比说"加个功能"有用得多
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: 你希望它怎么做
+    validations:
+      required: false
+
+  - type: textarea
+    id: info
+    attributes:
+      label: 相关资料
+      description: |
+        加工具/渠道的话，把**官方**信息贴上来：官网、官方安装方式、配置文件位置与格式、
+        去哪注册。注意：只接受能公开引用的官方来源，不接受中转站。
+    validations:
+      required: false

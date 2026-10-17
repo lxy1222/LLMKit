@@ -1,0 +1,7 @@
+blank_issues_enabled: false
+# 这里刻意不放 contact_links。
+#
+# 原来放了两条指向仓库 Security 页与 README 的链接，但仓库地址要等发布时才知道，
+# 于是只能先写 OWNER/REPO 占位符 —— 那种东西十有八九会被忘掉，最后变成两条
+# 点不通的链接。宁可没有链接：怎么报安全问题写在 SECURITY.md 里，
+# 怎么自己排查看 README 的「已知限制」。

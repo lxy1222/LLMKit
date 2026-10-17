@@ -1,0 +1,41 @@
+{
+  "schemaVersion": "0.1.0",
+  "updatedAt": "2026-01-01",
+  "_note": "运行时依赖目录。本文件可远程更新：改下载源、换镜像、调整兜底顺序都不需要重新发版。",
+  "_migrationNote": "Node.js 与 Git 已经升格成\"工具\"（见 config/tools.json 的 node / git 两项），由各自的页面独立安装，不再走\"补齐运行环境\"的批处理。这里保留 mirrorRewriters / installRoots 等引擎仍需要的配置；dependencies 数组留空。",
+  "_keyPrinciple": "免管理员路线是一等公民（决策 D4）。tiers 按此排序，needsAdmin=true 的层在未提权时会被自动跳过。",
+  "_mirrorModeNote": "mode=prefix 表示把完整原 URL 拼在代理前缀后面（ghproxy 系）；mode=replace 表示用正则替换域名前缀。用错会让兜底镜像静默 404。",
+  "mirrorRewriters": [
+    {
+      "id": "ghproxy-net",
+      "label": "ghproxy.net",
+      "mode": "prefix",
+      "match": "^https://github\\.com/",
+      "prefix": "https://ghproxy.net/",
+      "verified": false
+    },
+    {
+      "id": "gh-proxy-com",
+      "label": "gh-proxy.com",
+      "mode": "prefix",
+      "match": "^https://github\\.com/",
+      "prefix": "https://gh-proxy.com/",
+      "verified": false
+    },
+    {
+      "id": "ghfast-top",
+      "label": "ghfast.top",
+      "mode": "prefix",
+      "match": "^https://github\\.com/",
+      "prefix": "https://ghfast.top/",
+      "verified": false
+    }
+  ],
+  "installRoots": {
+    "userPrograms": "%LOCALAPPDATA%\\Programs",
+    "stateDir": "%LOCALAPPDATA%\\LLMKit",
+    "backupDir": "%LOCALAPPDATA%\\LLMKit\\backups",
+    "cacheDir": "%LOCALAPPDATA%\\LLMKit\\cache"
+  },
+  "dependencies": []
+}

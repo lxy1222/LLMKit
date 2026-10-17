@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>LLMKit · 大模型工具引导式一键安装器</title>
+<link rel="stylesheet" href="/assets/app.css">
+</head>
+<body>
+
+<header>
+  <div class="headrow">
+    <h1><a href="#/">LLMKit</a></h1>
+    <span class="sub">大模型工具引导式一键安装器 · 本地界面</span>
+    <span class="spacer"></span>
+    <span class="sub" id="where"></span>
+    <button id="refresh">刷新状态</button>
+    <button id="shutdown" title="停止本地服务并释放端口">关闭服务</button>
+  </div>
+  <nav id="nav"></nav>
+</header>
+
+<main id="app">
+  <div class="card">加载中…</div>
+</main>
+
+<div class="logbox" id="logbox">
+  <div class="loghead">
+    <span id="logTitle">日志</span>
+    <span id="jobState"></span>
+    <span class="spacer"></span>
+    <button id="logToggle">收起</button>
+  </div>
+  <pre id="log">（还没有运行任何动作）</pre>
+</div>
+
+<div class="modal" id="modal">
+  <div class="box">
+    <h3 id="modalTitle">确认</h3>
+    <div id="modalBody"></div>
+    <div class="foot">
+      <button id="modalCancel">取消</button>
+      <button id="modalOk" class="danger">确认执行</button>
+    </div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script src="/assets/app.js"></script>
+</body>
+</html>

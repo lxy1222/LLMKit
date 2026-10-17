@@ -1,0 +1,1047 @@
+{
+  "schemaVersion": "0.1.0",
+  "updatedAt": "2026-01-01",
+  "_note": "工具目录。设计为可远程更新：新增工具、修正安装命令或探测路径都不需要重新发版。verified=false 的条目表示尚未在本机实测。",
+  "networkTargets": [
+    { "id": "anthropic-api", "host": "api.anthropic.com", "port": 443, "purpose": "Anthropic 官方端点", "required": false },
+    { "id": "github", "host": "github.com", "port": 443, "purpose": "下载 cc-switch 等 Release 资产", "required": true },
+    { "id": "github-raw", "host": "raw.githubusercontent.com", "port": 443, "purpose": "读取远程配置与安装脚本", "required": false },
+    { "id": "npmjs", "host": "registry.npmjs.org", "port": 443, "purpose": "npm 官方源（安装 CLI 工具）", "required": false },
+    { "id": "npmmirror", "host": "registry.npmmirror.com", "port": 443, "purpose": "国内 npm 镜像（兜底路线）", "required": false },
+    { "id": "nodejs", "host": "nodejs.org", "port": 443, "purpose": "Node.js 官方下载", "required": false },
+    { "id": "deepseek-api", "host": "api.deepseek.com", "port": 443, "purpose": "国内渠道端点连通性样例", "required": false }
+  ],
+  "httpProbes": [
+    {
+      "id": "npmmirror",
+      "url": "https://registry.npmmirror.com/",
+      "purpose": "国内 npm 镜像（走它也证明国内镜像可用）"
+    },
+    {
+      "id": "nodejs",
+      "url": "https://nodejs.org/dist/",
+      "purpose": "Node.js 官方下载"
+    },
+    {
+      "id": "github-api",
+      "url": "https://api.github.com/rate_limit",
+      "purpose": "GitHub API（拉取 Release 信息）"
+    },
+    {
+      "id": "deepseek-api",
+      "url": "https://api.deepseek.com/",
+      "purpose": "国内模型渠道端点样例"
+    }
+  ],
+  "_httpProbeNote": "TCP 连接成功不等于真的能取到数据：企业网关、需要代理的网络、以及被限制的运行环境都可能「接受连接但不转发」。所以必须再做一次真实的 HTTP 往返，只要收到任何 HTTP 响应（哪怕是 403/404）就说明链路通了。",
+  "_policy": {
+    "artifacts": {
+      "action": "backup",
+      "note": "上次安装残留一律挪到备份区，绝不删除。必须显式 -CleanArtifacts 才执行。"
+    },
+    "conflicts": {
+      "default": "keep-path-hit",
+      "note": "检测到多份安装时，默认保留 PATH 实际命中的那份，其余挪到备份区。绝不自动删除。"
+    },
+    "scripts": {
+      "note": "powershell-pipe 类型的官方脚本一律先下载到本地、记录 SHA256 与来源，再执行；不直接管道进 iex，否则用户和我们都无法审计。"
+    }
+  },
+  "npmRegistryPrimary": "https://registry.npmjs.org",
+  "npmRegistryMirrors": [
+    "https://registry.npmmirror.com"
+  ],
+  "tools": [
+    {
+      "id": "claude-code",
+      "name": "Claude Code",
+      "vendor": "Anthropic",
+      "kind": "cli",
+      "role": "agent",
+      "configureMode": "tutorial",
+      "models": {
+        "writable": true,
+        "field": "%USERPROFILE%\\.claude\\settings.json 里的 ANTHROPIC_MODEL（HAIKU/SONNET/OPUS 三个默认值会一起改）",
+        "alsoViaCcSwitch": true,
+        "note": "cc-switch 也能管它的渠道和模型。两边都改会互相覆盖 —— 选一边改。"
+      },
+      "guide": {
+        "steps": [
+          { "section": "install", "title": "装好它", "check": "installed", "hint": "官方原生安装器不需要 Node.js，装到 %USERPROFILE%\\.local\\bin，不需要管理员权限。" },
+          { "section": "configure", "title": "配好渠道和模型", "check": "configured", "hint": "照 DeepSeek 官方说明设好下面这些环境变量。本工具不写 settings.json、也不经手你的 key。" },
+          { "section": "launch", "title": "启动，开始对话", "check": "launch", "hint": "第一次启动会弹一个交互式引导，按它走一遍就行。" }
+        ]
+      },
+      "priority": 1,
+      "commands": ["claude"],
+      "probePaths": [
+        "%USERPROFILE%\\.local\\bin\\claude.exe",
+        "%USERPROFILE%\\.local\\bin\\claude",
+        "%APPDATA%\\npm\\claude.cmd",
+        "%LOCALAPPDATA%\\Programs\\claude\\claude.exe",
+        "%ProgramFiles%\\claude\\claude.exe"
+      ],
+      "npmPackage": "@anthropic-ai/claude-code",
+      "install": {
+        "preferred": "native-script",
+        "tiers": [
+          {
+            "id": "native-script",
+            "label": "官方原生安装器",
+            "detail": "不需要 Node.js，直接下载独立的 claude 可执行文件到 %USERPROFILE%\\.local\\bin。这是成功率最高的一条路——即使 Node 装不上也能用。",
+            "type": "powershell-pipe",
+            "command": "irm https://claude.ai/install.ps1 | iex",
+            "scriptUrl": "https://claude.ai/install.ps1",
+            "verifyExecutable": "%USERPROFILE%\\.local\\bin\\claude.exe",
+            "verifyArgs": ["--version"],
+            "verifyPattern": "\\d+\\.\\d+",
+            "pathEntries": ["%USERPROFILE%\\.local\\bin"],
+            "needsAdmin": false,
+            "needsNode": false,
+            "needsNetwork": ["claude.ai"],
+            "verified": false,
+            "sourceUrl": "https://code.claude.com/docs/en/setup"
+          },
+          {
+            "id": "npm-global",
+            "label": "npm 全局安装",
+            "detail": "通过 npm 安装，需要 Node.js 18 以上。npm 官方源不通时会自动切国内镜像。",
+            "type": "npm",
+            "package": "@anthropic-ai/claude-code",
+            "needsAdmin": false,
+            "needsNode": true,
+            "minNodeMajor": 18,
+            "verified": true,
+            "sourceUrl": "https://www.npmjs.com/package/@anthropic-ai/claude-code"
+          }
+        ]
+      },
+      "configFiles": [
+        { "path": "%USERPROFILE%\\.claude\\settings.json", "type": "json", "purpose": "主配置，env 块写 ANTHROPIC_BASE_URL / ANTHROPIC_AUTH_TOKEN" },
+        { "path": "%USERPROFILE%\\.claude\\settings.local.json", "type": "json", "purpose": "本地覆盖配置" },
+        { "path": "%USERPROFILE%\\.claude.json", "type": "json", "purpose": "应用状态，含首次交互式引导状态位（字段名待实测）" }
+      ],
+      "verify": {
+        "versionCommand": "claude --version",
+        "smokeTest": "claude -p \"Reply with the single word OK\"",
+        "smokeTestNote": "非交互模式，用于验证 key 与端点真的可用"
+      },
+      "writes": [
+        {
+          "id": "claude-settings-env",
+          "label": "主配置的 env 块",
+          "path": "%USERPROFILE%\\.claude\\settings.json",
+          "kind": "json-object-patch",
+          "objectPath": "env",
+          "verified": true,
+          "notes": "只改 env 块。permissions / hooks / statusLine 等我们不了解的字段逐字节不动——用整文件重新序列化会改变数字精度、把中文转成 \\uXXXX，所以这里做的是外科改写。写入前自动时间戳备份。",
+          "entries": [
+            { "name": "ANTHROPIC_BASE_URL", "valueTemplate": "{provider.anthropicBaseUrl}" },
+            { "name": "ANTHROPIC_AUTH_TOKEN", "valueTemplate": "{keyOrPlaceholder}" },
+            { "name": "ANTHROPIC_MODEL", "valueTemplate": "{selectedModel}" },
+            { "name": "ANTHROPIC_DEFAULT_HAIKU_MODEL", "valueTemplate": "{selectedModel}" },
+            { "name": "ANTHROPIC_DEFAULT_SONNET_MODEL", "valueTemplate": "{selectedModel}" },
+            { "name": "ANTHROPIC_DEFAULT_OPUS_MODEL", "valueTemplate": "{selectedModel}" }
+          ]
+        },
+        {
+          "id": "claude-onboarding",
+          "label": "跳过首次交互式引导",
+          "path": "%USERPROFILE%\\.claude.json",
+          "kind": "json-object-patch",
+          "verified": true,
+          "notes": "只改这一个布尔值。该文件是 50KB 级的应用状态（含 projects 历史），所以必须外科改写、且只匹配根对象下的那一个键。cc-switch 也提供同样的开关，属于通行做法。需要 -SkipOnboarding 才写。",
+          "entries": [
+            { "name": "hasCompletedOnboarding", "rawValue": "true" }
+          ]
+        }
+      ],
+      "launch": {
+        "howTo": [
+          "在任意目录打开一个新的命令行窗口，敲 claude 进入会话（点「启动」会帮你开好这个窗口）。",
+          "第一次用之前先在本工具的「配置」页选渠道并写入配置 —— 六个工具里只有它，本工具能真的把 base_url / key / 模型写进配置文件。",
+          "想确认 key 真的通，用「跑一次冒烟」：它会问模型一句话并打印回答，然后自己退出。"
+        ]
+      },
+      "homeUrl": "https://code.claude.com/docs/en/setup",
+      "docsUrl": "https://code.claude.com/docs/en/setup",
+      "optionalExtras": [
+        {
+          "id": "zh-cn",
+          "label": "简体中文本地化",
+          "repo": "taekchef/claude-code-zh-cn",
+          "sourceUrl": "https://github.com/taekchef/claude-code-zh-cn",
+          "verified": false
+        }
+      ]
+    },
+    {
+      "id": "codex",
+      "name": "Codex CLI",
+      "vendor": "OpenAI",
+      "kind": "cli",
+      "role": "agent",
+      "configureMode": "tutorial",
+      "models": {
+        "writable": false,
+        "field": "%USERPROFILE%\\.codex\\config.toml 的 model 与 [model_providers.deepseek] 段",
+        "alsoViaCcSwitch": true,
+        "note": "官方一键脚本会写 config.toml 与 models.json 这两个文件。本工具不写它们，也不经手 key。"
+      },
+      "guide": {
+        "steps": [
+          { "section": "install", "title": "装好它", "check": "installed", "hint": "npm 全局装，不需要管理员权限。装完先运行一次 codex，让 %USERPROFILE%\\.codex 目录建出来 —— 下一步的官方脚本要用它。" },
+          { "section": "configure", "title": "配好渠道和模型", "check": "configured", "hint": "照 DeepSeek 官方给的一键配置脚本做，本工具不跑它、也不经手你的 key。" },
+          { "section": "launch", "title": "启动，开始写代码", "check": "launch", "hint": "在项目目录里启动，它才能读到那个目录的代码。" }
+        ]
+      },
+      "priority": 2,
+      "commands": ["codex"],
+      "probePaths": [
+        "%APPDATA%\\npm\\codex.cmd",
+        "%LOCALAPPDATA%\\Programs\\codex\\codex.exe"
+      ],
+      "npmPackage": "@openai/codex",
+      "install": {
+        "preferred": "npm-global",
+        "tiers": [
+          {
+            "id": "npm-global",
+            "label": "npm 全局安装",
+            "detail": "npm install -g @openai/codex，需要 Node.js",
+            "type": "npm",
+            "package": "@openai/codex",
+            "needsAdmin": false,
+            "needsNode": true,
+            "minNodeMajor": 18,
+            "verified": false,
+            "sourceUrl": "https://github.com/openai/codex"
+          }
+        ]
+      },
+      "configFiles": [
+        { "path": "%USERPROFILE%\\.codex\\config.toml", "type": "toml", "purpose": "Codex 配置（model / provider）" },
+        { "path": "%USERPROFILE%\\.codex\\auth.json", "type": "json", "purpose": "鉴权信息" }
+      ],
+      "verify": {
+        "versionCommand": "codex --version",
+        "smokeTest": "codex exec \"Reply with OK\""
+      },
+      "writes": [
+        {
+          "id": "codex-auth",
+          "label": "鉴权文件",
+          "path": "%USERPROFILE%\\.codex\\auth.json",
+          "kind": "json-object-patch",
+          "verified": false,
+          "notes": "官方接入说明里，key 是写在 config.toml 的 [model_providers.deepseek] 段（字段 experimental_bearer_token），由官方一键脚本负责写。auth.json 的字段名本工具没在真机确认过，所以默认不写；要写请加 -AllowUnverifiedTargets。",
+          "entries": [
+            { "name": "OPENAI_API_KEY", "valueTemplate": "{keyOrPlaceholder}" }
+          ]
+        }
+      ],
+      "launch": {
+        "howTo": [
+          "点「启动」会开一个新的命令行窗口并进入 codex 会话。",
+          "要它连 DeepSeek：跑上面第②步那个官方脚本，它会写 %USERPROFILE%\\.codex\\config.toml 与 models.json。",
+          "启动信息里显示 model: deepseek-flash 就是生效了 —— 这一条是官方文档用来判断配置有没有生效的依据。"
+        ]
+      },
+      "homeUrl": "https://github.com/openai/codex",
+      "docsUrl": "https://github.com/openai/codex"
+    },
+    {
+      "id": "opencode",
+      "name": "OpenCode",
+      "vendor": "sst",
+      "kind": "cli",
+      "role": "agent",
+      "configureMode": "tutorial",
+      "models": {
+        "writable": false,
+        "field": "%USERPROFILE%\\.config\\opencode\\opencode.json 的 provider.<id>.options.model",
+        "alsoViaCcSwitch": true,
+        "note": "嵌套结构，本工具只给值不写文件。可以在 OpenCode 界面里改，或用 cc-switch 切换。"
+      },
+      "guide": {
+        "steps": [
+          { "section": "install", "title": "装好它", "check": "installed", "hint": "用 npm 全局装到一个用户目录，不需要管理员权限。" },
+          { "section": "configure", "title": "配好渠道和模型", "check": "configured", "hint": "在 OpenCode 自己的界面里用 /connect 配，本工具不写它的配置文件、也不经手 key。" },
+          { "section": "launch", "title": "启动，开始写代码", "check": "launch", "hint": "要在你的项目目录里启动，它才能读到那个目录的代码。" }
+        ]
+      },
+      "priority": 3,
+      "commands": ["opencode"],
+      "probePaths": [
+        "%APPDATA%\\npm\\opencode.cmd",
+        "%USERPROFILE%\\.opencode\\bin\\opencode.exe",
+        "%LOCALAPPDATA%\\Programs\\opencode\\opencode.exe"
+      ],
+      "npmPackage": "opencode-ai",
+      "install": {
+        "preferred": "npm-global",
+        "tiers": [
+          {
+            "id": "npm-global",
+            "label": "npm 全局安装",
+            "detail": "npm install -g opencode-ai，需要 Node.js",
+            "type": "npm",
+            "package": "opencode-ai",
+            "needsAdmin": false,
+            "needsNode": true,
+            "minNodeMajor": 18,
+            "verified": false,
+            "sourceUrl": "https://github.com/sst/opencode"
+          }
+        ]
+      },
+      "configFiles": [
+        { "path": "%USERPROFILE%\\.config\\opencode\\opencode.json", "type": "json", "purpose": "供应商与模型配置（路径待实测）" }
+      ],
+      "verify": {
+        "versionCommand": "opencode --version",
+        "smokeTest": "opencode run \"Reply with OK\""
+      },
+      "writes": [
+        {
+          "id": "opencode-provider",
+          "label": "供应商配置（在界面/配置文件里添加）",
+          "path": "%USERPROFILE%\\.config\\opencode\\opencode.json",
+          "kind": "guidance",
+          "verified": true,
+          "notes": "OpenCode 的 provider 是嵌套结构（provider.<id>.options.baseURL），本工具的平面写入器不覆盖它。盲写嵌套结构很容易把配置搞坏，所以改为给值。",
+          "guidance": {
+            "why": "嵌套结构 + 会随版本变化，盲写风险高于收益。",
+            "steps": [
+              "运行 opencode 后按提示进入 provider 配置，或直接编辑该 json",
+              "把下面的 base_url / key / 模型填进 provider 段",
+              "填完在 OpenCode 里发一句话验证"
+            ]
+          },
+          "entries": [
+            { "name": "baseURL", "valueTemplate": "{provider.openaiBaseUrl}" },
+            { "name": "apiKey", "valueTemplate": "{keyOrPlaceholder}" },
+            { "name": "model", "valueTemplate": "{selectedModel}" }
+          ]
+        }
+      ],
+      "launch": {
+        "howTo": [
+          "点「启动」会开一个新的命令行窗口并进入 opencode。",
+          "如果它说没有可用的 provider：配置文件是 %USERPROFILE%\\.config\\opencode\\opencode.json，provider 是嵌套结构。",
+          "本工具对这一项只给值、不写文件 —— 盲写嵌套结构很容易把配置搞坏。"
+        ]
+      },
+      "homeUrl": "https://opencode.ai/",
+      "docsUrl": "https://github.com/sst/opencode"
+    },
+    {
+      "id": "gemini-cli",
+      "name": "Gemini CLI",
+      "vendor": "Google",
+      "kind": "cli",
+      "role": "agent",
+      "models": {
+        "writable": false,
+        "field": "%USERPROFILE%\\.gemini\\settings.json（字段名没在真机确认过，本工具不写）",
+        "alsoViaCcSwitch": true,
+        "note": "cc-switch 管得着它的渠道和模型；也可以直接改它自己的配置。"
+      },
+      "guide": {
+        "steps": [
+          { "section": "install", "title": "装好它", "check": "installed", "hint": "npm 全局装，不需要管理员权限。它要求 Node.js 20 以上。" },
+          { "section": "configure", "title": "用 cc-switch 改渠道", "check": "configured", "hint": "Gemini CLI 的渠道不用手改配置文件 —— 交给 cc-switch：它会把选中的供应商写进 Gemini CLI 自己的 settings.json 与 .env。本工具不碰这些文件。" },
+          { "section": "launch", "title": "启动，开始写代码", "check": "launch", "hint": "在项目目录里启动，它才能读到那个目录的代码。换完渠道要重开一次终端（或重启 gemini）才生效。" }
+        ]
+      },
+      "inApp": {
+        "name": "cc-switch",
+        "valuesLabel": "要填进 cc-switch 那个供应商里的值：",
+        "stepsLabel": "在 cc-switch 里怎么改渠道：",
+        "docUrl": "https://github.com/farion1231/cc-switch",
+        "checkedAt": "2026-10-17",
+        "note": "cc-switch 对 Gemini CLI 是「Switch」模式：同一时刻只有一个供应商生效。想回到 Google 官方登录，就在它的列表里切回内置的官方供应商（Google Official），重启 gemini 后按它的登录流程走。DeepSeek 这类不提供 Gemini 原生格式的渠道，要走 Gemini CLI 页顶部那个 Routing 标签（cc-switch 在本机转发并转换格式）—— 这条是 cc-switch 自己的说明，本工具没有实测过。",
+        "steps": [
+          { "do": "先把 cc-switch 装好并打开", "hint": "左边栏里选中「Gemini CLI」这一档 —— 它管的是 Gemini CLI 自己的配置，和 Claude Code / Codex 那几档互不影响" },
+          { "do": "点页面右上角的「+」添加供应商", "hint": "可以选预设，也可以选自定义；自定义时把下面那三个值填进去（名称 / Base URL / 模型），API Key 填你自己那把" },
+          { "do": "选中这个供应商，点「Enable」", "hint": "对 Gemini CLI 这个按钮叫 Enable；OpenCode / OpenClaw 那几个是「Add」，那是并存模式，不在这一档" },
+          { "do": "要连 DeepSeek 这种非 Gemini 格式的渠道：在 Gemini CLI 页顶部切到「Routing」，点「Start routing」", "hint": "由 cc-switch 在本机转发并把请求转换成 Gemini 格式；不用它就得换成一家原生说 Gemini 协议的渠道" },
+          { "do": "重开终端（或重启 gemini），再运行 gemini 验证", "hint": "Gemini CLI 不是热生效的：改完渠道必须重开一次才读新配置", "code": "gemini" }
+        ]
+      },
+      "priority": 4,
+      "commands": ["gemini"],
+      "probePaths": [
+        "%APPDATA%\\npm\\gemini.cmd",
+        "%LOCALAPPDATA%\\Programs\\gemini\\gemini.exe"
+      ],
+      "npmPackage": "@google/gemini-cli",
+      "install": {
+        "preferred": "npm-global",
+        "tiers": [
+          {
+            "id": "npm-global",
+            "label": "npm 全局安装",
+            "detail": "npm install -g @google/gemini-cli，需要 Node.js",
+            "type": "npm",
+            "package": "@google/gemini-cli",
+            "needsAdmin": false,
+            "needsNode": true,
+            "minNodeMajor": 20,
+            "verified": false,
+            "sourceUrl": "https://github.com/google-gemini/gemini-cli"
+          }
+        ]
+      },
+      "configFiles": [
+        { "path": "%USERPROFILE%\\.gemini\\settings.json", "type": "json", "purpose": "Gemini CLI 配置" },
+        { "path": "%USERPROFILE%\\.gemini\\.env", "type": "env", "purpose": "API key 环境变量" }
+      ],
+      "verify": {
+        "versionCommand": "gemini --version",
+        "smokeTest": "gemini -p \"Reply with OK\""
+      },
+      "writes": [
+        {
+          "id": "gemini-env",
+          "label": "渠道与 key（统一在 cc-switch 里改）",
+          "path": "%USERPROFILE%\\.gemini\\.env",
+          "kind": "guidance",
+          "verified": true,
+          "notes": "Gemini CLI 的价格在于它自己的渠道由 cc-switch 统一管：cc-switch 会把选中的供应商写进 %USERPROFILE%\\.gemini\\settings.json 与 .env。本工具不再自己写这个 .env —— 两边都写会互相覆盖，而且 Gemini CLI 到底读哪个文件名、要不要自定义 base_url，本工具都没在真机确认过。",
+          "guidance": {
+            "why": "渠道这件事已经有专门的工具（cc-switch）在做，而且它对 Gemini CLI 是 Switch 模式：同一时刻只有一个供应商生效。我们再写一份 .env，就会和它抢同一个文件。",
+            "steps": [
+              "打开 cc-switch，左边栏选中「Gemini CLI」这一档",
+              "点右上角「+」添加供应商：名称、Base URL、模型填下面这几个值，API Key 填你自己那把",
+              "选中它并点「Enable」；要连非 Gemini 格式的渠道，先在页顶切到「Routing」再点「Start routing」",
+              "重开终端（或重启 gemini）后才生效"
+            ]
+          },
+          "entries": [
+            { "name": "Base URL", "valueTemplate": "{provider.openaiBaseUrl}" },
+            { "name": "模型", "valueTemplate": "{selectedModel}" },
+            { "name": "API Key", "valueTemplate": "{keyOrPlaceholder}" }
+          ]
+        }
+      ],
+      "launch": {
+        "howTo": [
+          "点「启动」会开一个新的命令行窗口并进入 gemini。",
+          "渠道由 cc-switch 管：换完渠道要重开终端（或重启 gemini）才生效，因为它不是热读配置的。",
+          "想回到 Google 官方登录：在 cc-switch 的 Gemini CLI 那一档切回内置的官方供应商，重启后按它的登录流程走。"
+        ]
+      },
+      "homeUrl": "https://github.com/google-gemini/gemini-cli",
+      "docsUrl": "https://github.com/google-gemini/gemini-cli"
+    },
+    {
+      "id": "dsh",
+      "name": "DeepSeek Harness",
+      "vendor": "DeepSeek",
+      "kind": "cli",
+      "role": "agent",
+      "models": {
+        "writable": false,
+        "field": "dsh 自己的界面/配置（端点与模型要按插件 id 覆盖进 profiles\\<profile>\\cordis.patch.yml）",
+        "alsoViaCcSwitch": false,
+        "note": "它不在 cc-switch 的管辖范围，只能在 dsh 自己的界面里改。"
+      },
+      "guide": {
+        "steps": [
+          { "section": "install", "title": "装好它", "check": "installed", "hint": "用 npm 全局装到一个用户目录，不需要管理员权限。" },
+          { "section": "launch", "title": "启动，打开它的网页界面", "check": "launch", "hint": "它会起一个本地网页界面，并在那个窗口里打印访问地址。" },
+          { "section": "configure", "title": "在 dsh 自己的界面里配模型和 key", "check": "configured", "hint": "dsh 把凭据存在 ~/.dsh 的私有文件里，本工具不写它 —— 下面给的值可以直接复制过去填。" }
+        ]
+      },
+      "priority": 5,
+      "commands": ["dsh"],
+      "probePaths": [
+        "%APPDATA%\\npm\\dsh.cmd",
+        "%APPDATA%\\npm\\dsh.ps1"
+      ],
+      "npmPackage": "@deepseek-ai/dsh",
+      "install": {
+        "preferred": "npm-global",
+        "tiers": [
+          {
+            "id": "npm-global",
+            "label": "npm 全局安装",
+            "detail": "npm install -g @deepseek-ai/dsh，需要 Node.js",
+            "type": "npm",
+            "package": "@deepseek-ai/dsh",
+            "needsAdmin": false,
+            "needsNode": true,
+            "verified": false,
+            "sourceUrl": "https://www.npmjs.com/package/@deepseek-ai/dsh",
+            "note": "包自己的 package.json 没有声明 engines，所以给不出最低 Node 版本要求。本机是已装好的状态，从零安装的流程未验证。"
+          }
+        ]
+      },
+      "configFiles": [
+        { "path": "%USERPROFILE%\\.dsh\\settings.yaml", "type": "yaml", "purpose": "设置。本机实测只有 ui-onboarding 一项，模型与端点不在这里" },
+        { "path": "%USERPROFILE%\\.dsh\\.credentials.yaml", "type": "yaml", "purpose": "凭据存储。私有结构（version / records / refs），本工具不写" },
+        { "path": "%USERPROFILE%\\.dsh\\profiles\\<profile>\\cordis.patch.yml", "type": "yaml", "purpose": "用户覆盖层：按插件 id 定位的配置覆盖，模型与端点若要改应改这里（字段名未确认）" }
+      ],
+      "verify": {
+        "versionCommand": "dsh --version",
+        "smokeTest": null,
+        "smokeTestNote": "刻意只验证到 --version。再往下要么得启动 profile（而 --dump-config 实测会去写 cordis.yml，不是只读操作），要么得用真实凭据真跑一次任务，两者都不适合放进只读验证。"
+      },
+      "writes": [
+        {
+          "id": "dsh-credentials",
+          "label": "凭据与模型（在 dsh 自己的配置里）",
+          "path": "%USERPROFILE%\\.dsh\\.credentials.yaml",
+          "kind": "guidance",
+          "verified": false,
+          "notes": "本机实测：API Key 存在 .credentials.yaml 的 refs 里（refs 中那一项就叫 DEEPSEEK_API_KEY），文件是 version / records / refs 的私有结构，不是给人手写的配置——与 cc-switch 的 SQLite 同类，所以本工具不写。模型与端点若要覆盖，应写进 profiles\\<profile>\\cordis.patch.yml，那是按插件 id 定位的覆盖（形如 - id: <插件名> / config: {...}）；具体插件 id 与字段名未确认，不猜、不写。",
+          "guidance": {
+            "why": "key 在私有格式里，模型与端点要按插件 id 覆盖——两者的字段名都没有确认过，盲写会把 profile 的叠加树改坏，而且错了不显眼。",
+            "steps": [
+              "先确认 dsh 能跑：dsh --version 应输出版本号",
+              "凭据：按你装的那个版本的官方说明配置。本项目的开发环境里它已经是配好的状态，从零配置的官方步骤未能确认",
+              "模型与端点：打开 %USERPROFILE%\\.dsh\\profiles\\<profile>\\cordis.patch.yml（profile 名就是 dsh --profile 后面那个，例如 web），按该版本插件的 id 与字段名加一条覆盖，改完用 dsh --profile <profile> 启动确认",
+              "改之前先把 cordis.patch.yml 复制一份备份——它是叠加层，写坏了不容易看出来"
+            ]
+          },
+          "entries": [
+            { "name": "API Key（存在 .credentials.yaml 的 refs 里）", "valueTemplate": "{keyOrPlaceholder}" },
+            { "name": "Base URL（按插件 id 覆盖进 cordis.patch.yml）", "valueTemplate": "{provider.openaiBaseUrl}" },
+            { "name": "模型名（同上）", "valueTemplate": "{selectedModel}" }
+          ]
+        }
+      ],
+      "launch": {
+        "args": ["web"],
+        "server": { "portArg": "--port", "defaultPort": 3080 },
+        "howTo": [
+          "点「启动」会开一个新窗口并启动它的 web profile —— 起来的是一个网页界面，不是命令行会话。",
+          "第一次用要先配好凭据：凭据在 %USERPROFILE%\\.dsh\\ 下，是私有格式，本工具不写、只告诉你位置。"
+        ],
+        "uiHint": "起来之后它会自己打开浏览器。端口默认 3080；如果 3080 已经被占（比如你自己开着一个 DSH），会自动往上换一个，命令里能看到 --port <端口>。"
+      },
+      "homeUrl": "https://github.com/deepseek-ai/deepseek-harness",
+      "docsUrl": "https://github.com/deepseek-ai/deepseek-harness",
+      "notes": "官方链接取自 DSH 包自己 package.json 的 repository 字段（directory: apps/cli）；本项目没有访问过它，无法确认该仓库是否公开。实测到的部分：启动器在 %APPDATA%\\npm\\dsh.cmd、dsh --version 可用、~/.dsh 下那三个配置文件及其结构。未实测的部分：从零安装、凭据配置的官方步骤、模型与端点覆盖的具体字段名。"
+    },
+    {
+      "id": "cc-switch",
+      "name": "cc-switch",
+      "vendor": "开源社区",
+      "kind": "gui",
+      "role": "provider-manager",
+      "models": {
+        "writable": false,
+        "field": "%USERPROFILE%\\.cc-switch\\cc-switch.db（它自己的 SQLite）",
+        "alsoViaCcSwitch": false,
+        "note": "它自己不调模型 —— 它的作用是在这里填好渠道和模型，由它去写 Claude Code / Codex / OpenCode / Gemini CLI 的配置。"
+      },
+      "guide": {
+        "steps": [
+          { "section": "install", "title": "装好它", "check": "installed", "hint": "绿色免安装的图形界面程序，装完不用配 PATH，也不需要管理员权限。" },
+          { "section": "configure", "title": "在它界面里加供应商", "check": "configured", "hint": "这是它唯一的用途：把渠道和 key 存在它自己那儿，再由它去写各智能体自己的配置。本工具不碰它的数据库。" },
+          { "section": "launch", "title": "打开它", "check": "launch", "hint": "图形界面程序，点一下直接开窗口，没有命令行用法。" }
+        ]
+      },
+      "inApp": {
+        "name": "cc-switch",
+        "valuesLabel": "要填进那个供应商里的值（名称 / Base URL / 模型）：",
+        "stepsLabel": "在 cc-switch 里怎么加供应商：",
+        "docUrl": "https://github.com/farion1231/cc-switch",
+        "checkedAt": "2026-10-17",
+        "note": "它对每个工具分两种模式：Claude Code / Codex / Gemini CLI 是 Switch（同一时刻只有一个供应商生效），OpenCode / OpenClaw 是 Coexist（可以并存多个，在工具里自己挑）。供应商都存在它自己的 SQLite 里，本工具不读也不写。",
+        "steps": [
+          { "do": "打开 cc-switch，左边栏选中你要配的那个工具", "hint": "Claude Code / Codex / OpenCode / Gemini CLI 各是一档，配哪档只管哪档" },
+          { "do": "点页面右上角的「+」添加供应商", "hint": "可以选预设，也可以自定义；自定义时把下面那三个值填进去，API Key 填你自己那把" },
+          { "do": "选中这个供应商，点「Enable」", "hint": "OpenCode / OpenClaw 那几档是并存模式，按钮叫「Add」；Switch 那几档才叫 Enable" },
+          { "do": "要它对 Codex / Gemini CLI 生效：重开终端或重启那个 CLI", "hint": "Claude Code 不用重启；Codex 与 Gemini CLI 不是热读配置的" }
+        ]
+      },
+      "manages": ["claude-code", "codex", "opencode", "gemini-cli"],
+      "priority": 8,
+      "commands": ["cc-switch"],
+      "probePaths": [
+        "%LOCALAPPDATA%\\Programs\\CC Switch\\cc-switch.exe",
+        "%LOCALAPPDATA%\\Programs\\cc-switch\\cc-switch.exe",
+        "%LOCALAPPDATA%\\cc-switch\\cc-switch.exe",
+        "%ProgramFiles%\\cc-switch\\cc-switch.exe",
+        "%APPDATA%\\Microsoft\\Windows\\Start Menu\\Programs\\cc-switch.lnk"
+      ],
+      "uninstallRegistryNames": ["cc-switch", "CC Switch"],
+      "install": {
+        "preferred": "github-release",
+        "tiers": [
+          {
+            "id": "github-release",
+            "label": "从 GitHub Release 下载免安装版",
+            "detail": "拉取最新 Release 的 Windows 便携版 zip，解压到 %LOCALAPPDATA%\\Programs\\cc-switch。GitHub 直连不通时会自动改用国内加速源，不需要单独配一层。",
+            "type": "github-release",
+            "repo": "farion1231/cc-switch",
+            "assetPattern": "*windows*x64*.zip",
+            "archiveType": "zip",
+            "installRoot": "%LOCALAPPDATA%\\Programs\\cc-switch",
+            "flattenSingleRoot": true,
+            "pathEntries": [],
+            "verify": {
+              "relativePath": "cc-switch.exe",
+              "args": [],
+              "skipRun": true
+            },
+            "needsAdmin": false,
+            "verified": false,
+            "sourceUrl": "https://github.com/farion1231/cc-switch",
+            "note": "资产命名规则（是否提供 zip、文件名格式）尚未在真实 Release 页确认。若 Release 只提供安装器 .exe，本层会解析失败并自动退到人工引导层，不会替你静默安装第三方安装器。"
+          },
+          {
+            "id": "manual",
+            "label": "打开 Release 页手动下载（兜底）",
+            "detail": "自动下载失败时，直接把你送到 Release 页面自己挑一个装。本工具不会替你静默运行第三方安装器。",
+            "type": "manual",
+            "manualUrl": "https://github.com/farion1231/cc-switch/releases/latest",
+            "guidance": {
+              "steps": [
+                "在打开的页面里找到 Windows 版资产（文件名通常带 x64 与 windows）",
+                "优先选择免安装版（zip 或 portable）；如果只有 setup.exe，双击按提示安装即可",
+                "装好后回到本工具重跑一次，它会自动识别并接手配置"
+              ]
+            },
+            "needsAdmin": false,
+            "verified": false
+          }
+        ]
+      },
+      "configFiles": [
+        { "path": "%USERPROFILE%\\.cc-switch\\settings.json", "type": "json", "purpose": "它自己的设置（界面选项、上次选中的供应商），本机实测确认" },
+        { "path": "%USERPROFILE%\\.cc-switch\\cc-switch.db", "type": "sqlite", "purpose": "供应商与用量数据（providers / provider_endpoints / provider_health 等表），本机实测确认" }
+      ],
+      "verify": {
+        "versionCommand": null,
+        "smokeTest": null,
+        "smokeTestNote": "GUI 应用，改为验证进程可启动 + 配置文件可读"
+      },
+      "writes": [
+        {
+          "id": "ccswitch-provider",
+          "label": "在 cc-switch 界面里添加供应商",
+          "path": "%USERPROFILE%\\.cc-switch\\cc-switch.db",
+          "kind": "guidance",
+          "verified": true,
+          "notes": "本机实测：新版 cc-switch 把供应商存进 SQLite 数据库（providers / provider_endpoints / provider_health 等表）。",
+          "guidance": {
+            "why": "直接改写第三方应用的 SQLite 数据库风险太高——表结构、事务、版本迁移都不在我们掌控内，搞坏了是用户的数据损失。所以这里只给值，由你在界面里填。",
+            "steps": [
+              "打开 cc-switch，左边栏选中要配的那个工具（Claude Code / Codex / OpenCode / Gemini CLI 各一档）",
+              "点右上角「+」添加供应商，把下面列出的 Base URL / API Key / 模型照着填进去",
+              "选中它并点「Enable」（OpenCode / OpenClaw 那几档叫「Add」），cc-switch 就会把那个工具的配置写好"
+            ]
+          },
+          "entries": [
+            { "name": "Base URL", "valueTemplate": "{provider.anthropicBaseUrl}" },
+            { "name": "API Key", "valueTemplate": "{keyOrPlaceholder}" },
+            { "name": "模型", "valueTemplate": "{selectedModel}" }
+          ]
+        }
+      ],
+      "launch": {
+        "howTo": [
+          "它是图形界面程序，点「启动」直接开窗口。",
+          "它的用途是管供应商：在它界面里填好渠道和 key，再由它去写 Claude Code / Codex / OpenCode / Gemini CLI 四个工具的配置。"
+        ]
+      },
+      "homeUrl": "https://github.com/farion1231/cc-switch",
+      "docsUrl": "https://github.com/farion1231/cc-switch/blob/main/README.md",
+      "notes": "同时管理 Claude Code / Codex / OpenCode / Gemini CLI 四个 CLI 的供应商配置。仓库、README 与支持矩阵已核对（farion1231/cc-switch；本机装的是 3.13.0）；未确认的是 Release 资产的命名规则。"
+    },
+    {
+      "id": "python",
+      "name": "Python",
+      "vendor": "Python Software Foundation",
+      "kind": "cli",
+      "role": "companion",
+      "models": {
+        "writable": false,
+        "field": "没有这一项 —— Python 不调模型，没有模型名要填",
+        "alsoViaCcSwitch": false,
+        "note": "它不调模型 —— 它是编程运行时：写脚本、跑工具、pip 装包都靠它。"
+      },
+      "guide": {
+        "steps": [
+          { "section": "install", "title": "装好它", "check": "installed", "hint": "官方安装器装，全程不需要管理员权限。这一步要你自己点几下 —— 本工具不替你跑第三方安装器。" },
+          { "section": "configure", "title": "配 pip 国内镜像（可选）", "check": "configured", "hint": "不配也能用，只是从国外源装包会慢。下面几条只是建议，本工具不写你的 pip 配置。" },
+          { "section": "launch", "title": "启动，进交互式解释器", "check": "launch", "hint": "点「启动」会开一个窗口进 REPL；平时写脚本不需要常驻窗口。" },
+          { "section": "packages", "title": "装上常用的库（可选）", "hint": "下面这些是日常最常用的几类。本工具只检测装没装、给可复制的命令，不替你装包。" }
+        ]
+      },
+      "inApp": {
+        "name": "pip",
+        "showValues": false,
+        "stepsLabel": "配 pip 镜像（挑一条就行，都是在你的机器上执行）：",
+        "docUrl": "https://pip.pypa.io/en/stable/user_guide/#config-file",
+        "checkedAt": "2026-10-17",
+        "note": "这几条都会写进你自己的 pip 配置（%APPDATA%\\pip\\pip.ini），本工具不执行、也不改那个文件。只建议，不设默认 —— 用哪家源由你定。",
+        "steps": [
+          { "do": "先看现在用的是哪个源", "code": "pip config list" },
+          { "do": "换成清华源", "code": "pip config set global.index-url https://pypi.tuna.tsinghua.edu.cn/simple" },
+          { "do": "或者换成阿里源", "code": "pip config set global.index-url https://mirrors.aliyun.com/pypi/simple/" },
+          { "do": "想改回官方源", "code": "pip config unset global.index-url" }
+        ]
+      },
+      "priority": 9,
+      "commands": ["python"],
+      "detectOnlyCommands": ["py"],
+      "probePaths": [
+        "%LOCALAPPDATA%\\Programs\\Python\\Python314\\python.exe",
+        "%LOCALAPPDATA%\\Programs\\Python\\Python313\\python.exe",
+        "%LOCALAPPDATA%\\Programs\\Python\\Python312\\python.exe",
+        "%ProgramFiles%\\Python314\\python.exe",
+        "%ProgramFiles%\\Python313\\python.exe",
+        "%ProgramFiles%\\Python312\\python.exe",
+        "%LOCALAPPDATA%\\Programs\\Python\\Launcher\\py.exe"
+      ],
+      "install": {
+        "preferred": "manual",
+        "tiers": [
+          {
+            "id": "manual",
+            "label": "打开 python.org 官方下载页（自己点几下装）",
+            "detail": "本工具不会替你静默运行第三方安装器。安装第一屏务必勾上「Add python.exe to PATH」—— 不勾的话这里和别的工具都找不到 python。",
+            "type": "manual",
+            "manualUrl": "https://www.python.org/downloads/",
+            "guidance": {
+              "steps": [
+                "点上面的按钮打开 python.org 下载页（给的默认是最新稳定版）",
+                "下载 Windows installer (64-bit)，双击运行",
+                "第一屏勾上 Add python.exe to PATH，再点 Install Now",
+                "装完回到这个页面点「验证可用性」"
+              ]
+            },
+            "needsAdmin": false,
+            "verified": false,
+            "sourceUrl": "https://www.python.org/downloads/"
+          }
+        ]
+      },
+      "packages": [
+        { "name": "requests", "module": "requests", "why": "发 HTTP 请求" },
+        { "name": "numpy", "module": "numpy", "why": "数值计算、数组" },
+        { "name": "pandas", "module": "pandas", "why": "表格数据分析" },
+        { "name": "matplotlib", "module": "matplotlib", "why": "画图" },
+        { "name": "openpyxl", "module": "openpyxl", "why": "读写 Excel" },
+        { "name": "flask", "module": "flask", "why": "轻量 Web 服务" },
+        { "name": "django", "module": "django", "why": "Web 框架（重）" },
+        { "name": "pytest", "module": "pytest", "why": "单元测试" },
+        { "name": "pillow", "module": "PIL", "why": "图片处理" },
+        { "name": "beautifulsoup4", "module": "bs4", "why": "解析 HTML" },
+        { "name": "tqdm", "module": "tqdm", "why": "进度条" },
+        { "name": "openai", "module": "openai", "why": "调大模型 API" }
+      ],
+      "configFiles": [
+        { "path": "%APPDATA%\\pip\\pip.ini", "type": "ini", "purpose": "pip 的全局配置（镜像源就写在这里），本工具不写" }
+      ],
+      "verify": {
+        "versionCommand": "python --version",
+        "smokeTest": null,
+        "smokeTestNote": "它不调模型 —— 没有「让模型回答一句」这回事，所以只有版本验证。"
+      },
+      "uninstall": {
+        "supported": false,
+        "reason": "它是官方安装器装的，不在本工具管理的目录里。要卸载请用「设置 → 应用 → 已安装的应用」，或再运行一次那个安装器选 Uninstall。本工具不搬它的文件。"
+      },
+      "launch": {
+        "howTo": [
+          "点「启动」会开一个新的命令行窗口，直接进 Python 交互式解释器（>>>）。",
+          "想跑一个脚本：在那个文件所在的目录里执行 py 你的脚本.py。",
+          "启动失败多半是 python 不在 PATH 里 —— 装的时候没勾 Add python.exe to PATH，重跑一次安装器选 Repair 即可。"
+        ]
+      },
+      "homeUrl": "https://www.python.org/",
+      "docsUrl": "https://docs.python.org/3/",
+      "notes": "编程运行时，按官方安装器装（本工具只给步骤与链接，不代为运行安装器）。未在本机验证的部分：pip 镜像命令的输出、从零安装的完整流程（本机已有 Anaconda 3.11 与 Python 3.12，只能验证检测与版本识别）。"
+    },
+    {
+      "id": "pycharm",
+      "name": "PyCharm",
+      "vendor": "JetBrains",
+      "kind": "gui",
+      "role": "companion",
+      "models": {
+        "writable": false,
+        "field": "没有这一项 —— 它是编辑器，不调模型；解释器指向哪个 Python 才算它的配置",
+        "alsoViaCcSwitch": false,
+        "note": "它自己不调模型 —— 它是写 Python 的地方：把项目解释器指向你装好的那个 Python，代码就在里面跑。"
+      },
+      "guide": {
+        "steps": [
+          { "section": "install", "title": "装好它", "check": "installed", "hint": "官方安装器或免安装 zip 都行，两者都不需要管理员权限。这一步要你自己点几下。" },
+          { "section": "configure", "title": "把解释器指向你装好的 Python", "check": "configured", "hint": "PyCharm 不会自己去找 Python —— 每个项目都要指定一次解释器，否则跑不了代码。" },
+          { "section": "launch", "title": "打开它，开始写", "check": "launch", "hint": "图形界面程序，点一下直接开窗口。" }
+        ]
+      },
+      "inApp": {
+        "name": "PyCharm",
+        "showValues": false,
+        "stepsLabel": "在 PyCharm 里指定解释器：",
+        "docUrl": "https://www.jetbrains.com/help/pycharm/configuring-python-interpreter.html",
+        "checkedAt": "2026-10-17",
+        "note": "解释器是**每个项目各配一次**的，不是全局设定：新建项目时选一次，之后每个项目互不影响。本工具不写 PyCharm 的任何配置文件。",
+        "steps": [
+          { "do": "打开你的项目，进 Settings", "hint": "快捷键 Ctrl+Alt+S；新版把 Settings 放在左上角菜单里，Mac 上叫 Preferences" },
+          { "do": "左侧 Project: <项目名> → Python Interpreter", "hint": "如果这一栏是空的，说明这个项目还没配解释器" },
+          { "do": "点右侧 Add Interpreter → Add Local Interpreter → System Interpreter", "hint": "选 Existing（已有环境）那一档，别选 Virtualenv —— 先用系统里那个 Python 跑通再说" },
+          { "do": "在 Interpreter 那一行指向你的 python.exe", "hint": "路径可以回本工具的 Python 页面复制（「维护与细节」里有 python.exe 的位置）" },
+          { "do": "点 OK，等它建完索引；右下角状态栏不再转圈就说明好了", "hint": "之后在项目里新建一个 .py 文件，右键 Run 就能跑" }
+        ]
+      },
+      "priority": 10,
+      "commands": [],
+      "probePaths": [
+        "%LOCALAPPDATA%\\Programs\\PyCharm*\\bin\\pycharm64.exe",
+        "%LOCALAPPDATA%\\Programs\\PyCharm Community Edition*\\bin\\pycharm64.exe",
+        "%ProgramFiles%\\JetBrains\\PyCharm*\\bin\\pycharm64.exe",
+        "%LOCALAPPDATA%\\JetBrains\\Toolbox\\apps\\PyCharm*\\ch-*\\*\\bin\\pycharm64.exe",
+        "%APPDATA%\\JetBrains\\Toolbox\\apps\\PyCharm*\\ch-*\\*\\bin\\pycharm64.exe"
+      ],
+      "install": {
+        "preferred": "manual",
+        "tiers": [
+          {
+            "id": "manual",
+            "label": "打开 JetBrains 官方下载页（自己点几下装）",
+            "detail": "官方现在只有一个 PyCharm 发行版：基础功能够用就免费，Pro 功能才要订阅。安装器可选装到用户目录（不需要管理员）；也可以下「Windows zip」免安装版，解压即用、不写注册表。",
+            "type": "manual",
+            "manualUrl": "https://www.jetbrains.com/pycharm/download/",
+            "guidance": {
+              "steps": [
+                "点上面的按钮打开下载页，选 Windows",
+                "怕留垃圾就下「Windows zip」：解压到任意目录，双击 bin\\pycharm64.exe 就能用，卸载=删目录",
+                "想省事就下 .exe 安装器，注意别选装到需要管理员权限的目录",
+                "装完回到这个页面点「验证可用性」"
+              ]
+            },
+            "needsAdmin": false,
+            "verified": false,
+            "sourceUrl": "https://www.jetbrains.com/pycharm/download/"
+          }
+        ]
+      },
+      "verify": {
+        "versionCommand": null,
+        "smokeTest": null,
+        "smokeTestNote": "图形界面程序，没有命令行版本命令；这里只验证可执行文件在不在、能不能启动窗口。"
+      },
+      "uninstall": {
+        "supported": false,
+        "reason": "它由 JetBrains 的安装器或 Toolbox 安装，不在本工具管理的目录里。要卸载请用「设置 → 应用」或 Toolbox 自己卸；如果是 zip 免安装版，直接删掉那个目录即可。"
+      },
+      "launch": {
+        "howTo": [
+          "点「启动」会直接开 PyCharm 窗口。",
+          "第一次用得先给它指定项目解释器（见上面第②步），否则代码跑不起来。",
+          "zip 免安装版没有卸载入口：不想要了直接删目录。"
+        ]
+      },
+      "homeUrl": "https://www.jetbrains.com/pycharm/",
+      "docsUrl": "https://www.jetbrains.com/help/pycharm/",
+      "notes": "写 Python 的 IDE。安装方式与解释器路径已按官方页面核对（官方现在只有一个 PyCharm 发行版，Windows 提供 .exe 与 .win.zip 两种分发，都不需要管理员）。未在本机验证的部分：从零安装流程、启动窗口（本机没装 PyCharm）。"
+    },
+    {
+      "id": "node",
+      "name": "Node.js",
+      "vendor": "OpenJS Foundation",
+      "kind": "cli",
+      "role": "companion",
+      "models": {
+        "writable": false,
+        "field": "没有这一项 —— 它是运行时，不调模型",
+        "alsoViaCcSwitch": false,
+        "note": "Codex / OpenCode / Gemini CLI / DeepSeek Harness 都靠它跑（Claude Code 的官方安装器不需要 Node）。"
+      },
+      "guide": {
+        "steps": [
+          { "section": "install", "title": "装好它", "check": "installed", "hint": "默认走免管理员的便携版：解压到你的用户目录并加进 PATH。要求 v18 以上。" },
+          { "section": "configure", "title": "配 npm 镜像（可选）", "check": "configured", "hint": "不配也能用，只是 npm 装包会慢。下面几条只是建议，本工具不写你的 .npmrc。" },
+          { "section": "launch", "title": "启动，进 node 交互环境", "check": "launch", "hint": "点「启动」开一个窗口进 REPL；平时跑脚本直接 node 文件名.js。" }
+        ]
+      },
+      "inApp": {
+        "name": "npm",
+        "showValues": false,
+        "stepsLabel": "配 npm 镜像（挑一条，都是在你自己的机器上执行）：",
+        "docUrl": "https://registry.npmmirror.com/",
+        "checkedAt": "2026-10-17",
+        "note": "这几条会写进你自己的 ~/.npmrc，本工具不执行、也不改那个文件。只建议，不设默认。",
+        "steps": [
+          { "do": "先看现在用的是哪个源", "code": "npm config get registry" },
+          { "do": "换成国内镜像", "code": "npm config set registry https://registry.npmmirror.com" },
+          { "do": "想改回官方源", "code": "npm config delete registry" }
+        ]
+      },
+      "priority": 6,
+      "commands": ["node"],
+      "probePaths": [
+        "%LOCALAPPDATA%\\Programs\\nodejs\\node.exe",
+        "%ProgramFiles%\\nodejs\\node.exe",
+        "%ProgramFiles(x86)%\\nodejs\\node.exe"
+      ],
+      "install": {
+        "preferred": "portable-zip",
+        "tiers": [
+          {
+            "id": "portable-zip",
+            "label": "便携版解压到用户目录（免管理员，推荐）",
+            "detail": "从 npmmirror 或 nodejs.org 下载 zip，解压到 %LOCALAPPDATA%\\Programs\\nodejs，并把该目录加进用户级 PATH。全程不需要管理员权限。",
+            "needsAdmin": false,
+            "type": "portable-zip",
+            "versionIndexUrls": [
+              "https://npmmirror.com/mirrors/node/index.json",
+              "https://nodejs.org/dist/index.json"
+            ],
+            "versionFilter": "lts",
+            "assetUrlTemplate": "https://npmmirror.com/mirrors/node/{version}/node-{version}-win-x64.zip",
+            "assetUrlFallbacks": [
+              "https://nodejs.org/dist/{version}/node-{version}-win-x64.zip"
+            ],
+            "checksumUrlTemplates": [
+              "https://npmmirror.com/mirrors/node/{version}/SHASUMS256.txt",
+              "https://nodejs.org/dist/{version}/SHASUMS256.txt"
+            ],
+            "checksumEntryName": "node-{version}-win-x64.zip",
+            "installRoot": "%LOCALAPPDATA%\\Programs\\nodejs",
+            "flattenSingleRoot": true,
+            "pathEntries": ["%LOCALAPPDATA%\\Programs\\nodejs"],
+            "verify": { "relativePath": "node.exe", "args": ["-v"], "expectedPattern": "^v\\d+\\." },
+            "approxSizeMB": 32,
+            "verified": false,
+            "sourceUrl": "https://nodejs.org/en/download"
+          },
+          {
+            "id": "winget",
+            "label": "winget 安装（需要管理员）",
+            "detail": "winget install OpenJS.NodeJS.LTS。装的是机器级 MSI，需要管理员权限，卸载更干净。",
+            "needsAdmin": true,
+            "type": "winget",
+            "packageId": "OpenJS.NodeJS.LTS",
+            "verify": { "command": "node", "args": ["-v"], "expectedPattern": "^v\\d+\\." },
+            "approxSizeMB": 30,
+            "verified": false,
+            "sourceUrl": "https://nodejs.org/en/download"
+          }
+        ]
+      },
+      "configFiles": [
+        { "path": "%USERPROFILE%\\.npmrc", "type": "ini", "purpose": "npm 的配置（镜像源、token 都写在这里），本工具不写" }
+      ],
+      "verify": {
+        "versionCommand": "node -v",
+        "minMajor": 18,
+        "smokeTest": null,
+        "smokeTestNote": "它是运行时，没有「让模型回答一句」这回事，所以只有版本验证。"
+      },
+      "launch": {
+        "howTo": [
+          "点「启动」会开一个新的命令行窗口，直接进 Node 交互环境（>）。",
+          "跑脚本：node 你的脚本.js。",
+          "版本低于 v18 时，Codex / OpenCode / Gemini CLI / dsh 都可能装不上或跑不起来 —— 先升级 Node。"
+        ]
+      },
+      "homeUrl": "https://nodejs.org/",
+      "docsUrl": "https://nodejs.org/docs/latest/api/",
+      "notes": "别的工具的运行环境（Claude Code 的官方安装器不需要它）。安装层与镜像地址照搬自原来的依赖配置，未在本机验证下载链路。"
+    },
+    {
+      "id": "git",
+      "name": "Git for Windows",
+      "vendor": "Git for Windows",
+      "kind": "cli",
+      "role": "companion",
+      "models": {
+        "writable": false,
+        "field": "没有这一项 —— 它是版本控制工具，不调模型",
+        "alsoViaCcSwitch": false,
+        "note": "Claude Code 的部分功能（Bash 工具、文件差异对比）在 Windows 上依赖它。"
+      },
+      "guide": {
+        "steps": [
+          { "section": "install", "title": "装好它", "check": "installed", "hint": "默认走 MinGit 便携版：只有命令行、不含 GUI，比完整版小很多，也不需要管理员。" },
+          { "section": "configure", "title": "填上你那三样", "check": "configured", "hint": "第一次用 Git 要告诉它你是谁；「不明所有者」那个警告也要处理掉。都只给可复制的命令。" },
+          { "section": "launch", "title": "验证一下（它没有交互式界面）", "check": "launch", "hint": "Git 是命令行工具，MinGit 也自带 bash —— 所以这一段的按钮置灰，用上面第①段的「验证可用性」确认它能跑。" }
+        ]
+      },
+      "inApp": {
+        "name": "git",
+        "showValues": false,
+        "stepsLabel": "首次使用要填的三样（在你自己的终端里执行）：",
+        "docUrl": "https://git-scm.com/book/zh/v2/起步-初次运行-Git-前的配置",
+        "checkedAt": "2026-10-17",
+        "note": "这些会写进你的 ~/.gitconfig，本工具不执行、也不改那个文件。名字和邮箱填你自己的。",
+        "steps": [
+          { "do": "先看现在配了什么", "code": "git config --global --list" },
+          { "do": "填上名字", "code": "git config --global user.name \"你的名字\"" },
+          { "do": "填上邮箱", "code": "git config --global user.email \"你的邮箱\"" },
+          { "do": "消掉「detected dubious ownership」那个警告", "code": "git config --global --add safe.directory *", "hint": "Claude Code 之类的工具在别的目录里调用 Git 时会触发这个警告" }
+        ]
+      },
+      "priority": 7,
+      "commands": ["git"],
+      "probePaths": [
+        "%LOCALAPPDATA%\\Programs\\Git\\cmd\\git.exe",
+        "%ProgramFiles%\\Git\\cmd\\git.exe",
+        "%ProgramFiles(x86)%\\Git\\cmd\\git.exe"
+      ],
+      "install": {
+        "preferred": "mingit-portable",
+        "tiers": [
+          {
+            "id": "mingit-portable",
+            "label": "MinGit 便携版（免管理员，推荐）",
+            "detail": "只装 Git 的最小可用集合（不含 GUI），解压到 %LOCALAPPDATA%\\Programs\\Git，并把 cmd 目录加进用户级 PATH。",
+            "needsAdmin": false,
+            "type": "github-release",
+            "repo": "git-for-windows/git",
+            "assetPattern": "^MinGit-.*-64-bit\\.zip$",
+            "installRoot": "%LOCALAPPDATA%\\Programs\\Git",
+            "flattenSingleRoot": true,
+            "pathEntries": ["%LOCALAPPDATA%\\Programs\\Git\\cmd"],
+            "verify": { "relativePath": "cmd\\git.exe", "args": ["--version"], "expectedPattern": "^git version" },
+            "approxSizeMB": 55,
+            "verified": false,
+            "sourceUrl": "https://github.com/git-for-windows/git/releases"
+          },
+          {
+            "id": "winget",
+            "label": "winget 安装完整版（需要管理员）",
+            "detail": "winget install Git.Git。安装完整版 Git（含 Git Bash、GUI），需要管理员权限。",
+            "needsAdmin": true,
+            "type": "winget",
+            "packageId": "Git.Git",
+            "verify": { "command": "git", "args": ["--version"], "expectedPattern": "^git version" },
+            "approxSizeMB": 65,
+            "verified": false,
+            "sourceUrl": "https://git-scm.com/download/win"
+          }
+        ]
+      },
+      "configFiles": [
+        { "path": "%USERPROFILE%\\.gitconfig", "type": "ini", "purpose": "Git 的全局配置（user.name / user.email 等），本工具不写" }
+      ],
+      "verify": {
+        "versionCommand": "git --version",
+        "smokeTest": null,
+        "smokeTestNote": "它是版本控制工具，不调模型，所以只有版本验证。"
+      },
+      "launch": {
+        "disabled": true,
+        "disabledReason": "Git 是命令行工具，没有可以常驻的窗口（MinGit 不带 Git Bash）。请用第①段的「验证可用性」确认它能跑。",
+        "howTo": [
+          "它没有交互式界面，点「启动」不会给你一个可用的窗口 —— 所以这里故意不给按钮。",
+          "想确认它能不能用：回到第①段点「验证可用性」，或者在自己的终端里跑 git --version。",
+          "日常用法在项目目录里：git status / git add / git commit。"
+        ]
+      },
+      "homeUrl": "https://git-scm.com/",
+      "docsUrl": "https://git-scm.com/doc",
+      "notes": "Claude Code 的部分功能依赖它。MinGit 安装层与镜像地址照搬自原来的依赖配置，未在本机验证下载链路。"
+    }
+  ]
+}

@@ -1,0 +1,187 @@
+:root {
+  --bg: #f6f7f9; --card: #ffffff; --ink: #1f2328; --dim: #656d76;
+  --line: #d8dee4; --ok: #1a7f37; --warn: #9a6700; --fail: #cf222e; --accent: #0969da;
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--ink);
+       font: 14px/1.6 "Microsoft YaHei UI", "Segoe UI", system-ui, sans-serif; }
+
+/* ---------- 顶栏 ---------- */
+header { background: #fff; border-bottom: 1px solid var(--line); padding: 12px 22px; }
+.headrow { display: flex; align-items: baseline; gap: 14px; flex-wrap: wrap; }
+header h1 { margin: 0; font-size: 17px; }
+header h1 a { color: inherit; text-decoration: none; }
+header .sub { color: var(--dim); font-size: 12px; }
+header .spacer { flex: 1; }
+nav { margin-top: 10px; display: flex; gap: 4px; flex-wrap: wrap; }
+nav a { font-size: 13px; padding: 5px 11px; border-radius: 6px; text-decoration: none;
+        color: var(--dim); border: 1px solid transparent; }
+nav a:hover { color: var(--accent); background: #f0f6ff; }
+nav a.on { color: var(--accent); border-color: #bcd8f7; background: #f0f6ff; font-weight: 600; }
+
+main { max-width: 1100px; margin: 0 auto; padding: 18px 22px 300px; }
+
+/* ---------- 通用控件 ---------- */
+button { font: inherit; padding: 7px 14px; border-radius: 6px; cursor: pointer;
+         border: 1px solid var(--line); background: #fff; color: var(--ink); }
+button:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
+button:disabled { opacity: .5; cursor: not-allowed; }
+button.danger { border-color: #f0b4b4; color: var(--fail); }
+button.danger:hover:not(:disabled) { border-color: var(--fail); background: #fff5f5; color: var(--fail); }
+button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+button.primary:hover:not(:disabled) { background: #0860ca; color: #fff; }
+button.tiny { padding: 3px 9px; font-size: 12px; }
+
+.switch { display: inline-flex; align-items: center; gap: 6px; padding: 6px 10px;
+          border: 1px solid var(--line); border-radius: 6px; background: #fff; }
+.switch.on { border-color: var(--fail); color: var(--fail); }
+.note { color: var(--dim); font-size: 12px; }
+.mono { font-family: Consolas, "Cascadia Mono", monospace; font-size: 12px; word-break: break-all; }
+.warnText { color: var(--warn); }
+.failText { color: var(--fail); }
+
+.bar { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-bottom: 14px; }
+.pill { font-size: 11px; padding: 1px 8px; border-radius: 999px; border: 1px solid var(--line);
+        color: var(--dim); font-weight: normal; white-space: nowrap; }
+.pill.ok { color: var(--ok); border-color: #b7e0c0; background: #f0fff4; }
+.pill.warn { color: var(--warn); border-color: #f0e0b0; background: #fffdf0; }
+.pill.fail { color: var(--fail); border-color: #f0b4b4; background: #fff5f5; }
+
+section { margin-top: 22px; }
+section > h2 { font-size: 14px; color: var(--dim); font-weight: 600; margin: 0 0 8px; }
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 12px; }
+.card { background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: 14px 16px; }
+.card h3 { margin: 0 0 6px; font-size: 15px; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.card h3 a { color: inherit; text-decoration: none; }
+.card h3 a:hover { color: var(--accent); text-decoration: underline; }
+.card .acts { margin-top: 10px; display: flex; gap: 6px; flex-wrap: wrap; }
+.meta { color: var(--dim); font-size: 12px; word-break: break-all; }
+.issues { margin: 6px 0 0; padding-left: 18px; color: var(--warn); font-size: 12px; }
+details { background: #fff; border: 1px solid var(--line); border-radius: 8px; padding: 10px 14px; }
+summary { cursor: pointer; color: var(--dim); }
+
+/* ---------- 说明块 ---------- */
+
+details.howto { margin-top: 10px; }
+
+/* 官方教程里的多行代码块（如 DeepSeek 给的 9 行环境变量） */
+pre.cmdbig { background: #f6f8fa; border: 1px solid var(--line); border-radius: 6px;
+             padding: 10px 12px; margin: 8px 0 0; overflow-x: auto;
+             white-space: pre; font: 12px/1.7 Consolas, "Cascadia Mono", monospace; color: var(--ink); }
+/* ---------- 分段式排版：编号就是标题 ---------- */
+/* 只有 guide.steps 每步都写了 section 的工具走这套（目前是 dsh）。
+   编号由渲染顺序生成，所以步数不同、顺序不同都不会错乱。 */
+section.step > h2 { font-size: 15px; color: var(--ink); font-weight: 600;
+                    display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin: 0 0 6px; }
+section.step .stepno { display: inline-flex; align-items: center; justify-content: center;
+                       width: 22px; height: 22px; border-radius: 50%;
+                       background: var(--accent); color: #fff; font-size: 13px; line-height: 1; }
+section.step .stephint { margin: 0 0 8px; }
+section.step { margin-top: 20px; }
+section.maint { margin-top: 20px; }
+section.maint > details { background: transparent; border-style: dashed; }
+section.maint > details > summary { font-size: 13px; }
+.toolstat { margin: 2px 0 0; }
+/* ---------- 智能体页的操作步骤 ---------- */
+/* 步骤链要一眼看出"哪一步还没做"，所以状态用 pill 顶在步骤标题后面；
+   序号用 ol 自带的，不自己画圆圈 —— 手画的序号在窄屏上会和文字打架。 */
+ol.steps { margin: 6px 0 0 20px; padding: 0; }
+ol.steps > li { margin-bottom: 14px; }
+ol.steps > li:last-child { margin-bottom: 0; }
+ol.steps .stepdo { font-weight: 600; }
+ol.steps .cmd { margin-top: 6px; }
+ol.steps .acts { margin-top: 4px; }
+details.howto summary { font-weight: 600; color: var(--ink); }
+details.howto .howto-body { margin-top: 10px; font-size: 13px; }
+details.howto .howto-body p { margin: 0 0 8px; }
+details.howto ol { margin: 8px 0 0 20px; padding: 0; }
+details.howto li { margin-bottom: 10px; }
+details.howto li:last-child { margin-bottom: 0; }
+details.howto code { font-family: Consolas, "Cascadia Mono", monospace; font-size: 12px;
+                     background: #f2f4f7; border: 1px solid var(--line); border-radius: 4px; padding: 1px 6px; }
+details.howto b { color: var(--ink); }
+
+/* ---------- 工具页 ---------- */
+.crumb { margin-bottom: 6px; }
+.crumb a { color: var(--accent); text-decoration: none; font-size: 13px; }
+.toolhead { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 4px; }
+.toolhead h2 { margin: 0; font-size: 20px; }
+
+.tiers { display: grid; gap: 8px; }
+.tier { display: flex; gap: 10px; align-items: flex-start; background: #fff;
+        border: 1px solid var(--line); border-radius: 8px; padding: 11px 13px; cursor: pointer; }
+.tier:hover { border-color: #bcd8f7; }
+.tier.sel { border-color: var(--accent); background: #f7fbff; }
+.tier input { margin-top: 4px; }
+.tier .tname { font-weight: 600; display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.tier .tdetail { color: var(--dim); font-size: 12px; }
+
+table.tbl { width: 100%; border-collapse: collapse; background: #fff;
+            border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+table.tbl th, table.tbl td { text-align: left; padding: 8px 11px; border-bottom: 1px solid var(--line);
+                             font-size: 12px; vertical-align: top; }
+table.tbl th { background: #fafbfc; color: var(--dim); font-weight: 600; white-space: nowrap; }
+table.tbl tr:last-child td { border-bottom: 0; }
+table.tbl td.mono { font-family: Consolas, "Cascadia Mono", monospace; word-break: break-all; }
+
+.kv { display: grid; grid-template-columns: 92px 1fr; gap: 4px 10px; font-size: 12px; }
+.kv dt { color: var(--dim); }
+.kv dd { margin: 0; word-break: break-all; }
+
+.opts { display: flex; gap: 14px; flex-wrap: wrap; align-items: center; margin: 10px 0 0; }
+.chk { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--dim); }
+.chk input { margin: 0; }
+
+.callout { border-left: 3px solid var(--accent); background: #f7fbff; padding: 8px 12px;
+           border-radius: 0 6px 6px 0; font-size: 12px; color: var(--dim); margin: 10px 0 0; }
+.callout.warn { border-left-color: var(--warn); background: #fffdf5; }
+
+/* 表单元素 */
+select, input[type="text"] {
+  font: inherit; padding: 4px 8px; border: 1px solid var(--line); border-radius: 6px;
+  background: #fff; color: var(--ink);
+}
+input[type="text"].mono, input#cfgTokenEnv { font-family: Consolas, "Cascadia Mono", monospace; font-size: 13px; }
+
+/* 诊断报告正文：要能整段读到，不能被页面布局切断 */
+pre.diagbox { background: #f6f8fa; border: 1px solid var(--line); border-radius: 6px;
+              padding: 12px 14px; max-height: 60vh; overflow: auto; white-space: pre-wrap;
+              word-break: break-word; font: 12px/1.55 Consolas, "Cascadia Mono", monospace;
+              margin: 0; }
+
+.navsep { width: 1px; background: var(--line); margin: 4px 6px; }
+
+/* ---------- 日志面板 ---------- */
+.logbox { position: fixed; left: 0; right: 0; bottom: 0; background: #0d1117;
+          border-top: 1px solid #30363d; z-index: 40; }
+.logbox .loghead { display: flex; align-items: center; gap: 10px; padding: 6px 16px;
+                   background: #161b22; color: #c9d1d9; font-size: 12px; }
+.logbox .loghead .spacer { flex: 1; }
+.logbox .loghead button { padding: 2px 10px; font-size: 12px; background: transparent;
+                          color: #c9d1d9; border-color: #30363d; }
+.logbox .loghead button:hover { color: #fff; border-color: #8b949e; }
+.logbox pre { margin: 0; padding: 10px 16px; max-height: 220px; overflow: auto;
+              white-space: pre-wrap; word-break: break-all; color: #c9d1d9;
+              font: 12px/1.5 Consolas, "Cascadia Mono", monospace; }
+.logbox.collapsed pre { display: none; }
+.pill.run { color: #d29922; border-color: #6b5416; background: #2a2312; }
+.pill.done { color: #3fb950; border-color: #1f5c2a; background: #0f2417; }
+.pill.bad { color: #f85149; border-color: #6e2320; background: #2b1414; }
+
+/* ---------- 确认框 ---------- */
+.modal { position: fixed; inset: 0; background: rgba(0,0,0,.38); display: none;
+         align-items: center; justify-content: center; padding: 20px; z-index: 60; }
+.modal.show { display: flex; }
+.modal .box { background: #fff; border-radius: 10px; max-width: 660px; width: 100%;
+              padding: 20px 22px; max-height: 86vh; overflow: auto; }
+.modal h3 { margin: 0 0 10px; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.modal .cmd { background: #f6f8fa; border: 1px solid var(--line); border-radius: 6px;
+              padding: 8px 10px; margin: 10px 0; word-break: break-all;
+              font: 12px/1.5 Consolas, monospace; }
+.modal .foot { display: flex; justify-content: flex-end; gap: 8px; margin-top: 16px; }
+.modal ul { margin: 8px 0 0; padding-left: 20px; font-size: 13px; }
+
+.toast { position: fixed; bottom: 260px; left: 50%; transform: translateX(-50%);
+         background: #1f2328; color: #fff; padding: 8px 16px; border-radius: 6px;
+         font-size: 13px; z-index: 80; display: none; }
+.toast.show { display: block; }

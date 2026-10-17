@@ -1,0 +1,25 @@
+# 行尾统一：Windows 脚本保持 CRLF，其余按仓库默认
+# .cmd 必须是 CRLF，否则 cmd.exe 在某些情况下会解析出怪问题
+*.cmd text eol=crlf
+*.bat text eol=crlf
+*.ps1 text eol=crlf
+*.psm1 text eol=crlf
+
+*.json text eol=lf
+.gitignore    text eol=lf
+.gitattributes text eol=lf
+.editorconfig text eol=lf
+LICENSE       text eol=lf
+*.md   text eol=lf
+
+# 前端与 CI 配置一律 LF：这些文件在别的平台上也要能直接读
+*.js   text eol=lf
+*.css  text eol=lf
+*.html text eol=lf
+*.yml  text eol=lf
+*.yaml text eol=lf
+
+# 二进制
+*.exe binary
+*.zip binary
+*.cab binary

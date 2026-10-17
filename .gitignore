@@ -1,0 +1,28 @@
+# ---- 运行时产物：绝不提交 ----
+# out/ 里有本机环境报告、安装会话日志、备份、以及单文件版的释放内容，
+# 里面含用户名路径与机器名。开源仓库里不能出现这些。
+out/
+
+# 打包产物：由 build/Build-Release.ps1 生成，不进版本库
+build/dist/
+
+# 单文件 exe / cmd 的运行痕迹
+*.llmkit-tmp
+*.llmkit-probe-*
+
+# ---- 日志与临时文件 ----
+*.log
+*.tmp
+*.bak
+*.reverted-*
+
+# ---- 编辑器与系统 ----
+.vscode/
+.idea/
+*.swp
+Thumbs.db
+desktop.ini
+~$*
+
+# ---- 明确要保留的（防止有人手滑加规则）----
+!config/*.json
