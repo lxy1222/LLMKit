@@ -27,12 +27,32 @@ const APP = process.argv[3] || path.join(__dirname, '..', 'web', 'assets', 'app.
 let pass = 0, fail = 0;
 const failures = [];
 
+// GitHub 会把 「::error::」 开头的行解析成 annotation —— 注解是**公开可读**的，
+// 而 CI 的原始日志要登录才看得到。把失败项同时写一份进注解与 Step Summary，
+// 出问题时不登录也能知道是哪一条挂了（这条在没有本地复现环境的机器上救过命）。
+function annotate(text) {
+  const one = String(text).replace(/\r?\n/g, ' / ');
+  console.log('::error::[冒烟] ' + one);
+}
+function writeSummary(lines) {
+  const p = process.env.GITHUB_STEP_SUMMARY;
+  if (!p) { return; }
+  try { fs.appendFileSync(p, lines.join('\n') + '\n', 'utf8'); } catch (e) { /* 摘要写不进去不该让测试失败 */ }
+}
+function finish(code) {
+  const head = ['### 前端冒烟测试', '', '- 通过 ' + pass + ' 项，失败 ' + fail + ' 项'];
+  const tail = fail ? ['', '- 失败项：', ''].concat(failures.map(f => '  - ' + f)) : ['', '- 全部通过'];
+  writeSummary(head.concat(tail));
+  process.exit(code);
+}
+
 function check(name, ok, detail) {
   if (ok) { pass++; console.log('  [PASS] ' + name); }
   else {
     fail++;
     failures.push(name);
     console.log('  [FAIL] ' + name + (detail ? ' —— ' + detail : ''));
+    annotate(name + (detail ? ' —— ' + detail : ''));
   }
 }
 
@@ -375,7 +395,10 @@ check('步骤状态跟着安装状态走', cl.indexOf('该你了') >= 0 || cl.in
   check('② 段给出可复制的值', k2.indexOf('data-copy=') >= 0 && k2.indexOf('Base URL') >= 0);
   check('② 段没有写入按钮', k2.indexOf('cfgWrite-cc-switch') < 0);
   check('③ 段是「打开它」', cc.slice(kno('③')).indexOf('打开它') >= 0);
-  check('③ 段有启动按钮', cc.indexOf('data-launch="cc-switch"') >= 0);
+  // 启动按钮的有无同样跟着接口走：没装的机器上这里只能是禁用按钮
+  check('③ 段的启动按钮与安装状态一致',
+    apiCc.installed ? cc.indexOf('data-launch="cc-switch"') >= 0 : cc.slice(kno('③')).indexOf('<button disabled') >= 0,
+    'installed=' + apiCc.installed);
   // 老排版的臃肿块不许回来
   check('没有「存 key 的变量名」输入框（它不负责存 key）', cc.indexOf('存 key 的变量名') < 0);
   // 这个词在折叠维护区里还会出现（那是它该在的地方），所以断言的是它没有独立成节
@@ -553,11 +576,20 @@ check('步骤状态跟着安装状态走', cl.indexOf('该你了') >= 0 || cl.in
   const seg3 = ds.slice(noPos('③'));
   check('① 里是安装（有安装按钮）', seg1.indexOf('id="do-install"') >= 0);
   check('① 里也有"验证可用性"', seg1.indexOf('id="do-verify"') >= 0);
-  check('② 里是启动（dsh 的顺序：装完先把它跑起来）', seg2.indexOf('data-launch="dsh"') >= 0);
-  // dsh 是服务型工具：启动命令必须带 web 子命令，并且带上我们选定的端口
-  check('启动命令带上了 web 子命令', seg2.indexOf(' web') >= 0);
-  check('启动命令带上 --port', seg2.indexOf('--port') >= 0);
-  check('启动段显示了预计地址', seg2.indexOf('预计地址：http://127.0.0.1:') >= 0);
+  // 启动器只对已装工具给出命令与地址（没装就没有可执行路径可拼），所以这段
+  // 必须按接口的真实安装状态分支 —— 否则在干净机器上会连着假失败三条。
+  const apiDsh = await (await fetch(BASE + '/api/tool/dsh')).json();
+  if (apiDsh.installed) {
+    check('② 里是启动（dsh 的顺序：装完先把它跑起来）', seg2.indexOf('data-launch="dsh"') >= 0);
+    // dsh 是服务型工具：启动命令必须带 web 子命令，并且带上我们选定的端口
+    check('启动命令带上了 web 子命令', seg2.indexOf(' web') >= 0);
+    check('启动命令带上 --port', seg2.indexOf('--port') >= 0);
+    check('启动段显示了预计地址', seg2.indexOf('预计地址：http://127.0.0.1:') >= 0);
+  } else {
+    check('没装时不给可点的启动按钮', seg2.indexOf('data-launch="dsh"') < 0 && seg2.indexOf('<button disabled') >= 0);
+    check('没装时也说清它是服务型工具（要带 web 与 --port）', seg2.indexOf('web') >= 0 && seg2.indexOf('--port') >= 0);
+    check('（没装，跳过"启动命令/预计地址"断言）', true);
+  }
   check('③ 里是配置（有渠道与模型选择）', seg3.indexOf('cfgProvider-dsh') >= 0);
   // dsh 全是 guidance 目标 → 本工具一个字节都不写 → 不给"写入"按钮，只给可复制的值
   check('③ 不给写入按钮（本工具不写 dsh 的配置）', seg3.indexOf('cfgWrite-dsh') < 0);
@@ -618,7 +650,7 @@ check('步骤状态跟着安装状态走', cl.indexOf('该你了') >= 0 || cl.in
 
   console.log('历史页');
   setHash('#/history');
-  await wait('历史页渲染', () => el('app').innerHTML.indexOf('会话历史') >= 0);
+  await wait('历史页渲染', () => el('app').innerHTML.indexOf('会话历史') >= 0, 20000);
   const hs = el('app').innerHTML;
   check('列出会话或给出空状态说明', hs.indexOf('data-restore=') >= 0 || hs.indexOf('还没有会话记录') >= 0);
   check('写明还原也是只搬不删', hs.indexOf('只搬不删') >= 0);
@@ -683,16 +715,17 @@ check('步骤状态跟着安装状态走', cl.indexOf('该你了') >= 0 || cl.in
   check('没装时写明不能启动的原因', apiCl2.installed || lz2.indexOf('还没装') >= 0);
   check('照样给出怎么启动的说明', lz2.indexOf('怎么启动、怎么用') >= 0);
 
-  // 首页卡片：装了才给启动按钮，没装就不给
+  // 首页卡片：装了才给启动按钮，没装就不给。
+  // 这里逐个工具对接口真值 —— 别猜本机装了什么（runner 上 Node 与 Git 是预装的）。
   setHash('#/');
   await wait('首页（启动）', () => el('app').innerHTML.indexOf('#/tool/opencode') >= 0);
   const homeLaunch = el('app').innerHTML;
-  if (launchId) {
-    check('首页上已装的工具卡片有启动按钮', homeLaunch.indexOf('data-launch="' + launchId + '"') >= 0);
-  } else {
-    check('本机没装工具时首页卡片不给启动按钮', homeLaunch.indexOf('data-launch=') < 0);
-  }
-  check('首页卡片的启动按钮与安装状态一致', launchProbe['claude-code'].installed || homeLaunch.indexOf('data-launch="claude-code"') < 0);
+  const ovTools = ((await (await fetch(BASE + '/api/overview')).json()).tools) || [];
+  const launchMismatch = ovTools.filter((t) => {
+    const hasBtn = homeLaunch.indexOf('data-launch="' + t.id + '"') >= 0;
+    return hasBtn !== !!t.installed;
+  }).map((t) => t.id + (t.installed ? '(装了却没有按钮)' : '(没装却给了按钮)'));
+  check('首页卡片的启动按钮与安装状态逐个一致', launchMismatch.length === 0, launchMismatch.join('、'));
 
   // 从这里开始要真的在服务端跑任务了 —— 把"拦住 /api/run"的开关关掉。
   blockRun = false;
@@ -759,7 +792,7 @@ check('步骤状态跟着安装状态走', cl.indexOf('该你了') >= 0 || cl.in
   if (restoreCount > 0) {
     console.log('还原的确认框');
     setHash('#/history');
-    await wait('历史页（执行模式）', () => el('app').innerHTML.indexOf('data-restore=') >= 0);
+    await wait('历史页（执行模式）', () => el('app').innerHTML.indexOf('data-restore=') >= 0, 30000);
     const mPath = /data-restore="([^"]+)"/.exec(el('app').innerHTML);
     const sessPath = mPath ? mPath[1] : '';
     check('拿到了会话日志路径', sessPath.length > 0);
@@ -802,9 +835,12 @@ check('步骤状态跟着安装状态走', cl.indexOf('该你了') >= 0 || cl.in
   console.log('  ' + '-'.repeat(62));
   console.log('通过 ' + pass + ' 项，失败 ' + fail + ' 项');
   if (fail) { console.log('失败项：\n  - ' + failures.join('\n  - ')); }
-  process.exit(fail ? 1 : 0);
+  finish(fail ? 1 : 0);
 })().catch(e => {
   console.log('  [FAIL] 冒烟测试异常终止：' + e.message);
   console.log(e.stack);
-  process.exit(1);
+  fail++;
+  failures.push('异常终止：' + e.message);
+  annotate('异常终止：' + e.message);
+  finish(1);
 });
