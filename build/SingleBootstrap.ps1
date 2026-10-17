@@ -61,9 +61,12 @@ try {
     }
 
     # 参数透传：让 -SelfTest 之类的开关也能用在这个单文件上
+    # 必须整体套在 @() 里：只给一个参数时 "@(...) | Where-Object" 会把结果退化成字符串，
+    # 之后 $extra[0] 取到的是字符 '-'，子进程会收到一个光秃秃的减号、PowerShell 参数绑定直接崩。
+    # (单文件 -SelfTest 就是这么崩的：退出码 -532462766，报 name 无效。)
     $extra = @()
     if (-not [string]::IsNullOrEmpty($env:LLMKIT_ARGS)) {
-        $extra = @($env:LLMKIT_ARGS -split '\s+') | Where-Object { $_ }
+        $extra = @(@($env:LLMKIT_ARGS -split '\s+') | Where-Object { $_ })
     }
 
     # --log <路径>：和单文件 exe 保持一致的写法。exe 是无控制台的 winexe，必须靠它留证据；
