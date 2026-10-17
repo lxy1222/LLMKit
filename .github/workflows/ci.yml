@@ -30,6 +30,8 @@ jobs:
         run: |
           # PS 5.1 读无 BOM 的 UTF-8 会按 ANSI 解码，中文全成乱码、语法都过不了。
           # 这条不靠人记，交给 CI 钉住（历史上踩过四次）。
+          $ErrorActionPreference = 'Stop'
+          try {
           $files = @(Get-ChildItem src, tests, build -Recurse -Include *.ps1, *.psm1 | Sort-Object FullName)
           $bad = 0
           $report = New-Object System.Collections.ArrayList
@@ -62,6 +64,16 @@ jobs:
           $report | ForEach-Object { Write-Host $_ }
           Write-Host ($files.Count.ToString() + ' 个脚本检查完毕')
           if ($bad -gt 0) { throw ($bad.ToString() + ' 个脚本不合格') }
+          } catch {
+            # 任何异常也要留下公开可读的 annotation —— 否则只能登录才能看日志，等于没法排查
+            $msg = [string]$_.Exception.Message
+            $inv = $_.InvocationInfo
+            Write-Host ('::error file=.github/workflows/ci.yml,line=1::CI 检查异常：' + $msg)
+            Write-Host ('异常类型：' + $_.Exception.GetType().Name)
+            Write-Host ('异常位置：' + $inv.PositionMessage)
+            Write-Host ('PowerShell：' + $PSVersionTable.PSVersion.ToString())
+            throw
+          }
 
       - name: 泄露扫描（本机路径 / key / 诊断报告）
         shell: pwsh
