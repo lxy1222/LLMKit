@@ -280,6 +280,8 @@ function Get-LLMKitOverview {
             if (-not ($st -and $st.installed)) { [void]$issues.Add('未安装') }
             [void]$tools.Add([pscustomobject]([ordered]@{
                         id = $tool.id; name = $tool.name; vendor = $tool.vendor; kind = $tool.kind
+                        # 全是 manual 层的工具（Python / PyCharm）没有"安装器替你装"这回事，首页按钮据此改叫「手动安装」
+                        canAutoInstall = (@(@(Get-ObjectProp -Object (Get-ObjectProp -Object $tool -Name 'install') -Name 'tiers') | Where-Object { [string](Get-ObjectProp -Object $_ -Name 'type') -ne 'manual' }).Count -gt 0)
                         # 角色：agent = 你要用它干活；provider-manager = 帮你管渠道的配套工具。
                         # 界面据此分组，不再把 cc-switch 和五个智能体并排混在一起。
                         role = [string](Get-ObjectProp -Object $tool -Name 'role')
@@ -493,14 +495,48 @@ function Get-LLMKitToolDetail {
                 }))
     }
 
+    # 有没有「安装器能真的替你装」的层？全是 manual 时（Python / PyCharm 就是这样），
+    # 点「安装 / 重装」什么都不会发生 —— 那种工具只该给下载页，不该给安装按钮。
+    $canAutoInstall = (@($tiers | Where-Object { -not $_.isManual }).Count -gt 0)
+    $manualUrl = ''
+    foreach ($t in @(Get-ObjectProp -Object (Get-ObjectProp -Object $tool -Name 'install') -Name 'tiers')) {
+        $u = [string](Get-ObjectProp -Object $t -Name 'manualUrl')
+        if (-not [string]::IsNullOrEmpty($u)) { $manualUrl = $u; break }
+    }
+
     $cfgTargets = New-Object System.Collections.ArrayList
     foreach ($c in @(Get-ConfigTargets -ConfigRoot $ConfigRoot -ToolIds @($ToolId))) {
         $p = [System.Environment]::ExpandEnvironmentVariables($c.path)
+        $exists = Test-Path -LiteralPath $p -PathType Leaf
+        # 占位符检测：没拿到 key 时写进去的是「<在这里粘贴你的 API Key>」这种值。
+        # 界面要据此直接告诉用户「改哪个文件的哪一行」，所以把命中项一起发出去，
+        # 免得前端去解析文件、也多一次请求。
+        # 注意：path 一律用模版写法（%USERPROFILE%\...），绝不发绝对路径 —— 界面不显示本机用户名。
+        $pending = @()
+        $filled = 0
+        if ($exists -and $c.kind -like 'json*') {
+            try {
+                $docX = [System.IO.File]::ReadAllText($p) | ConvertFrom-Json
+                $scope = $docX
+                if ($c.objectPath) { $scope = Get-ObjectProp -Object $docX -Name $c.objectPath }
+                if ($scope) {
+                    foreach ($e in @($c.entries)) {
+                        $nm = [string](Get-ObjectProp -Object $e -Name 'name')
+                        if ([string]::IsNullOrEmpty($nm)) { continue }
+                        $val = [string](Get-ObjectProp -Object $scope -Name $nm)
+                        if ($val -match '^<.+>$') { $pending += [pscustomobject]@{ name = $nm; placeholder = $val } }
+                        elseif (-not [string]::IsNullOrWhiteSpace($val)) { $filled++ }
+                    }
+                }
+            } catch { }
+        }
         [void]$cfgTargets.Add([pscustomobject]([ordered]@{
                     id = $c.id; label = $c.label; path = $c.path; kind = $c.kind
                     verified = $c.verified; notes = $c.notes
-                    exists = (Test-Path -LiteralPath $p -PathType Leaf)
+                    exists = $exists
                     managedKeys = @($c.entries | ForEach-Object { [string](Get-ObjectProp -Object $_ -Name 'name') })
+                    pending = @($pending)
+                    filled = $filled
                 }))
     }
 
@@ -519,6 +555,7 @@ function Get-LLMKitToolDetail {
     # 这个工具可用的动作
     $actions = New-Object System.Collections.ArrayList
     foreach ($a in @(Get-LLMKitActionCatalog | Where-Object { $_.scope -eq 'tool' })) {
+        if ($a.id -eq 'tool-install' -and -not $canAutoInstall) { continue }
         if ($a.id -eq 'tool-artifacts' -and $artifacts.Count -eq 0) { continue }
         if ($a.id -eq 'tool-uninstall' -and -not $uninstallOk) { continue }
         if ($a.id -eq 'tool-resolve-conflicts' -and -not $st.conflict) { continue }
@@ -594,6 +631,8 @@ function Get-LLMKitToolDetail {
             installations = @($st.installations)
             tiers = @($tiers)
             preferredTier = [string]$tool.install.preferred
+            canAutoInstall = $canAutoInstall
+            manualUrl = $manualUrl
             configTargets = @($cfgTargets)
             artifacts = @($artifacts | ForEach-Object { [pscustomobject]@{ dir = $_.dir; members = @($_.members) } })
             actions = @($actions)

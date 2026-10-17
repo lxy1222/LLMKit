@@ -462,6 +462,12 @@ function Invoke-FileDownload {
         $outStream.Flush()
         $out.bytes = $received
         $out.ok = $true
+        # Content-Length 明确给了总长却没收够，就是被代理/网络提前掐断的下载：必须算失败。
+        # 否则半截包会被记成"下载完成"，错误一路拖到解压那一刻才暴露。
+        if ($total -gt 0 -and $received -ne $total) {
+            $out.ok = $false
+            $out.error = '下载不完整：收到 ' + $received + ' / ' + $total + ' 字节'
+        }
         if ($OnProgress) { & $OnProgress $received $total }
     } catch {
         $out.error = Get-ShortErrorText -Text $_.Exception.Message
@@ -479,10 +485,13 @@ function Invoke-FileDownload {
 }
 
 function Invoke-DownloadWithMirrors {
-    <# 依次尝试：原始 URL -> 各镜像。全部失败才返回失败，并保留每次尝试的错误。 #>
+    <# 依次尝试：原始 URL -> 各镜像。全部失败才返回失败，并保留每次尝试的错误。
+       ExpectedBytes 来自 GitHub Release API 的资产大小：镜像把包截短了也照样回 200，
+       只有拿官方尺寸当场比对才能识破。它大于 0 时，大小不符按失败处理、继续试下一源。 #>
     param(
         [Parameter(Mandatory = $true)][string[]]$Urls,
         [Parameter(Mandatory = $true)][string]$Destination,
+        [long]$ExpectedBytes = 0,
         [string]$Proxy,
         [int]$TimeoutSec = 1800,
         [scriptblock]$OnProgress
@@ -491,8 +500,14 @@ function Invoke-DownloadWithMirrors {
     foreach ($u in $Urls) {
         if ([string]::IsNullOrEmpty($u)) { continue }
         $r = Invoke-FileDownload -Url $u -Destination $Destination -Proxy $Proxy -TimeoutSec $TimeoutSec -OnProgress $OnProgress
-        [void]$attempts.Add([pscustomobject]@{ url = $u; ok = $r.ok; bytes = $r.bytes; error = $r.error; elapsedMs = $r.elapsedMs })
-        if ($r.ok) {
+        $attemptOk = [bool]$r.ok
+        $attemptError = [string]$r.error
+        if ($attemptOk -and $ExpectedBytes -gt 0 -and [long]$r.bytes -ne [long]$ExpectedBytes) {
+            $attemptOk = $false
+            $attemptError = '下载大小不符：收到 ' + $r.bytes + ' 字节，官方资产为 ' + $ExpectedBytes + ' 字节'
+        }
+        [void]$attempts.Add([pscustomobject]@{ url = $u; ok = $attemptOk; bytes = $r.bytes; error = $attemptError; elapsedMs = $r.elapsedMs })
+        if ($attemptOk) {
             $r | Add-Member -NotePropertyName attempts -NotePropertyValue @($attempts) -Force
             return $r
         }
@@ -562,7 +577,7 @@ function Resolve-GitHubReleaseAsset {
     }
     $out.tag = [string]$rel.tag_name
     foreach ($a in @($rel.assets)) {
-        if ([string]$a.name -match $AssetPattern) {
+        if (Test-AssetNameMatch -Name ([string]$a.name) -Pattern $AssetPattern) {
             $out.ok = $true
             $out.assetName = [string]$a.name
             $out.assetUrl = [string]$a.browser_download_url
@@ -570,13 +585,54 @@ function Resolve-GitHubReleaseAsset {
             return [pscustomobject]$out
         }
     }
-    $out.error = ('Release ' + $out.tag + ' 里没有匹配 ' + $AssetPattern + ' 的资产')
+    # 报错时把资产名一起带出来：配置里写错模式（这已经发生过一次）光看"没有匹配"根本改不对。
+    $names = @($rel.assets | ForEach-Object { [string]$_.name } | Select-Object -First 6)
+    $out.error = ('Release ' + $out.tag + ' 里没有匹配 ' + $AssetPattern + ' 的资产（共 ' + @($rel.assets).Count + ' 个' +
+        $(if ($names.Count -gt 0) { '，例如：' + ($names -join '、') } else { '' }) + '）')
     return [pscustomobject]$out
+}
+
+function Test-AssetNameMatch {
+    <#
+        资产名匹配：优先按正则（配置里 assetPattern 一直是正则，git 那条用的就是 ^...$）。
+        但配置是人写的，出现 glob 风格（例如 "*windows*x64*.zip"）时 -match 会直接抛
+        "Quantifier {x,y} following nothing."，把整份安装计划一起炸掉 —— 一条配置笔误
+        不该有这么大的杀伤力，所以正则不成立时退回通配符语义。
+    #>
+    param([string]$Name, [string]$Pattern)
+    if ([string]::IsNullOrEmpty($Name) -or [string]::IsNullOrEmpty($Pattern)) { return $false }
+    try {
+        return [bool]($Name -match $Pattern)
+    } catch {
+        $rx = [regex]::Escape($Pattern).Replace('\*', '.*').Replace('\?', '.')
+        try { return [bool]($Name -match ('^' + $rx + '$')) } catch { return $false }
+    }
 }
 
 # ======================================================================
 #  解压与目录处理
 # ======================================================================
+
+function Test-ZipArchiveReadable {
+    <#
+        只读地验证一个 zip 能不能被解析。
+        截断/损坏的包在 OpenRead 时就会抛「End of Central Directory record could not be found」，
+        让它在这里、在下载完那一刻就暴露，而不是等解压到一半、或者更糟：被当成缓存复用。
+    #>
+    param([Parameter(Mandatory = $true)][string]$Path)
+    if (-not (Test-Path -LiteralPath $Path)) { return $false }
+    $za = $null
+    try {
+        Add-Type -AssemblyName System.IO.Compression.FileSystem -ErrorAction SilentlyContinue
+        $za = [System.IO.Compression.ZipFile]::OpenRead($Path)
+        if ($za.Entries.Count -lt 1) { return $false }
+        return $true
+    } catch {
+        return $false
+    } finally {
+        if ($za) { try { $za.Dispose() } catch { } }
+    }
+}
 
 function Expand-ZipToDirectory {
     param(
@@ -776,11 +832,16 @@ function Add-EntriesToUserPath {
         -DryRun 时只算出结果并写 journal，不落盘。
     #>
     param(
-        [Parameter(Mandatory = $true)][string[]]$Entries,
+        [Parameter(Mandatory = $true)][AllowEmptyCollection()][AllowEmptyString()][string[]]$Entries,
         [Parameter(Mandatory = $true)]$Session,
         [switch]$Apply
     )
     $out = [ordered]@{ changed = $false; added = @(); before = ''; after = ''; error = ''; broadcast = $false }
+    # 空列表是正常情况：绿色 GUI 工具（cc-switch 就是）根本没有 PATH 条目。以前直接把空数组绑进
+    # Mandatory 参数，参数绑定器会抛 "Cannot bind argument to parameter 'Entries' because it is an empty
+    # array" —— 文件明明已经「已就位」，却因为最后一步的 PATH 把整次安装判成失败。
+    $real = @($Entries | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) })
+    if ($real.Count -eq 0) { return [pscustomobject]$out }
     $info = Get-UserPathInfo
     if (-not $info.available) {
         $out.error = $info.error
@@ -789,7 +850,7 @@ function Add-EntriesToUserPath {
     $out.before = $info.value
     $current = $info.value
     $addedNow = New-Object System.Collections.ArrayList
-    foreach ($e in $Entries) {
+    foreach ($e in $real) {
         $m = Merge-PathEntry -CurrentPath $current -Entry $e
         if ($m.changed) {
             $current = $m.value
@@ -822,11 +883,14 @@ function Remove-EntriesFromUserPath {
         还原靠 journal 里的 path.user.remove 记录，Restore-LLMKitSession 会把它们加回去。
     #>
     param(
-        [Parameter(Mandatory = $true)][string[]]$Entries,
+        [Parameter(Mandatory = $true)][AllowEmptyCollection()][AllowEmptyString()][string[]]$Entries,
         [Parameter(Mandatory = $true)]$Session,
         [switch]$Apply
     )
     $out = [ordered]@{ changed = $false; removed = @(); before = ''; after = ''; error = ''; broadcast = $false }
+    # 同理：没有要移除的条目就直接返回（卸载一个本来就没写 PATH 的绿色工具就是这种情形）。
+    $real = @($Entries | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) })
+    if ($real.Count -eq 0) { return [pscustomobject]$out }
     $info = Get-UserPathInfo
     if (-not $info.available) {
         $out.error = $info.error
@@ -835,7 +899,7 @@ function Remove-EntriesFromUserPath {
     $out.before = $info.value
     $current = $info.value
     $removedNow = New-Object System.Collections.ArrayList
-    foreach ($e in $Entries) {
+    foreach ($e in $real) {
         if ([string]::IsNullOrWhiteSpace($e)) { continue }
         $r = Remove-PathEntry -CurrentPath $current -Entry $e
         if ($r.changed) {
@@ -948,13 +1012,33 @@ function Install-PortableItem {
         return [pscustomobject]$res
     }
 
+    # archiveType: zip（默认，绿色压缩包）| raw-file（下载下来的就是程序本身）
+    # 刻意不实现"静默安装 .exe"：在用户机器上无声执行第三方安装器风险太高，
+    # 而且我们无法验证它到底做了什么。遇到安装器形式的资产会走人工引导层。
+    $archiveType = 'zip'
+    if ($tier.archiveType) { $archiveType = [string]$tier.archiveType }
+
     try {
         # --- 2) 下载 ---
+        # 缓存先验再用：上次失败留下的半截包若被当作缓存"复用"，会一路错到解压那一刻才暴露，
+        # 而且每次重试都撞同一堵墙。这里按三件事验：字节数非零、大小对得上、zip 能解析。
         if (Test-Path -LiteralPath $archive) {
-            [void]$steps.Add('复用缓存：' + $archive)
-        } else {
+            $cacheBytes = 0
+            try { $cacheBytes = [long](Get-Item -LiteralPath $archive).Length } catch { }
+            $cacheUsable = ($cacheBytes -gt 0)
+            if ($cacheUsable -and $dl.sizeBytes -and ($cacheBytes -ne [long]$dl.sizeBytes)) { $cacheUsable = $false }
+            if ($cacheUsable -and $archiveType -eq 'zip') { $cacheUsable = Test-ZipArchiveReadable -Path $archive }
+            if ($cacheUsable) {
+                [void]$steps.Add('复用缓存：' + $archive)
+            } else {
+                Remove-Item -LiteralPath $archive -Force -ErrorAction SilentlyContinue
+                [void]$steps.Add('缓存不可用（大小不符或压缩包已损坏），已丢弃并重新下载：' + $archive)
+                Add-JournalEntry -Session $Session -Action ('install.' + $Item.id + '.cache') -Target $archive -Before $cacheBytes -Status 'failed' -Note '缓存里的压缩包不可用，已丢弃'
+            }
+        }
+        if (-not (Test-Path -LiteralPath $archive)) {
             [void]$steps.Add('下载开始：' + $dl.urls[0])
-            $down = Invoke-DownloadWithMirrors -Urls @($dl.urls) -Destination $archive -Proxy $Proxy -OnProgress $OnProgress
+            $down = Invoke-DownloadWithMirrors -Urls @($dl.urls) -Destination $archive -Proxy $Proxy -OnProgress $OnProgress -ExpectedBytes ([long]$dl.sizeBytes)
             if (-not $down.ok) {
                 $detail = ($down.attempts | ForEach-Object { $_.url + ' => ' + $_.error }) -join ' ; '
                 $firstErr = ''
@@ -970,6 +1054,15 @@ function Install-PortableItem {
             $res.sha256 = $down.sha256
             [void]$steps.Add('下载完成：' + (Format-ByteSize -Bytes $down.bytes) + ' / ' + $down.url)
             Add-JournalEntry -Session $Session -Action ('install.' + $Item.id + '.download') -Target $archive -After ([ordered]@{ url = $down.url; bytes = $down.bytes; sha256 = $down.sha256; elapsedMs = $down.elapsedMs }) -Note '下载完成'
+        }
+
+        # 下载完立刻验包：截断的 zip 在解压时会抛 .NET 的晦涩异常，这里先说清楚是包坏了。
+        if ($archiveType -eq 'zip' -and -not (Test-ZipArchiveReadable -Path $archive)) {
+            $gotBytes = 0
+            try { $gotBytes = [long](Get-Item -LiteralPath $archive).Length } catch { }
+            $res.error = '下载到的压缩包已损坏或不完整（' + (Format-ByteSize -Bytes $gotBytes) + '）：镜像返回了被截断的文件，请重试或换镜像。'
+            Add-JournalEntry -Session $Session -Action ('install.' + $Item.id + '.download') -Target $archive -Status 'failed' -Note $res.error
+            return [pscustomobject]$res
         }
 
         if (-not $res.sha256) {
@@ -1008,11 +1101,7 @@ function Install-PortableItem {
         Add-JournalEntry -Session $Session -Action ('install.' + $Item.id + '.checksum') -Target $archive -After ([ordered]@{ expected = $res.sha256Expected; actual = $res.sha256; verified = $res.sha256Verified }) -Note $(if ($null -eq $res.sha256Verified) { '无官方校验和，仅记录' } else { '校验通过' })
 
         # --- 4) 落地到 staging ---
-        # archiveType: zip（默认，绿色压缩包）| raw-file（下载下来的就是程序本身）
-        # 刻意不实现"静默安装 .exe"：在用户机器上无声执行第三方安装器风险太高，
-        # 而且我们无法验证它到底做了什么。遇到安装器形式的资产会走人工引导层。
-        $archiveType = 'zip'
-        if ($tier.archiveType) { $archiveType = [string]$tier.archiveType }
+        # archiveType 已在下载前定好（缓存校验要用到）；raw-file 与 zip 走两条路。
         if (Test-Path -LiteralPath $staging) { Remove-Item -LiteralPath $staging -Recurse -Force -ErrorAction SilentlyContinue }
         if ($archiveType -eq 'raw-file') {
             [void](New-Item -ItemType Directory -Path $staging -Force)
@@ -1112,7 +1201,9 @@ function Install-PortableItem {
         # --- 9) PATH ---
         $pathResult = Add-EntriesToUserPath -Entries @($pathTargets) -Session $Session -Apply:$writePath
         $res.pathResult = $pathResult
-        if ($sandboxed) {
+        if (@($pathTargets).Count -eq 0) {
+            [void]$steps.Add('这个工具不需要 PATH 条目（绿色 GUI 工具，直接运行就行）')
+        } elseif ($sandboxed) {
             [void]$steps.Add('沙箱模式：PATH 目标为 ' + ($pathTargets -join ' , ') + '（未写入注册表）')
         } elseif ($pathResult.error) {
             [void]$steps.Add('PATH 写入失败：' + $pathResult.error)
@@ -1128,7 +1219,8 @@ function Install-PortableItem {
         Add-JournalEntry -Session $Session -Action ('install.' + $Item.id + '.error') -Target $installRoot -Status 'failed' -Note $res.error
         if (Test-Path -LiteralPath $staging) { try { Remove-Item -LiteralPath $staging -Recurse -Force -ErrorAction SilentlyContinue } catch { } }
     } finally {
-        if (-not $KeepCache -and $res.ok -and (Test-Path -LiteralPath $archive)) {
+        # 失败的包绝不留缓存：下一次运行会把它当缓存"复用"，把同样的错误再演一遍。
+        if (-not $KeepCache -and (Test-Path -LiteralPath $archive)) {
             try { Remove-Item -LiteralPath $archive -Force -ErrorAction SilentlyContinue } catch { }
         }
     }

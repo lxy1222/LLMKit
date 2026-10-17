@@ -188,7 +188,9 @@ function Get-JsonMemberSpan {
         这也天然避开了 projects.* 里同名字段的干扰（.claude.json 里就有）。
     #>
     param(
-        [Parameter(Mandatory = $true)][string]$Text,
+        # 允许空串：新建文件时正文就是空的，函数内部本来就有 empty-text 分支。
+        # 少了这个属性，全新机器上（还没有 .claude\settings.json）整条配置写入会在计划阶段崩掉。
+        [Parameter(Mandatory = $true)][AllowEmptyString()][string]$Text,
         [Parameter(Mandatory = $true)][AllowEmptyString()][string]$Name
     )
     $res = [ordered]@{
@@ -366,6 +368,19 @@ function Add-JsonMemberText {
 #  目标解析与取值
 # ======================================================================
 
+function Test-ConfigPlaceholderValue {
+    <#
+        判断一个值是不是"占位提示"（形如 <在这里粘贴你的 API Key>）。
+
+        为什么需要它：占位符一旦被真的写进配置，就会被工具当成真值去用 ——
+        实测把 Claude Code 直接弄挂（Invalid auth token ... 17 characters，就是 <在这里粘贴你的 API Key> 这 17 个字符）。
+        所以没有真 key 时，宁可不写这一项（让它回落到用户自己的环境变量），也不写一个假值。
+    #>
+    param([AllowEmptyString()][string]$Value)
+    if ([string]::IsNullOrEmpty($Value)) { return $false }
+    return ($Value -match '^<.+>$')
+}
+
 function Resolve-ConfigValue {
     <#
         解析配置里写的取值模板。支持：
@@ -482,7 +497,9 @@ function New-ConfigFileContent {
         # 先收集对象里已有的键（保持原有顺序）
         $objName = $Target.objectPath
         if ($objName) {
-            $span = Get-JsonMemberSpan -Text $text -Name $objName
+            # 解析成员区间只为「改已有文件」服务：文件不存在时 $text 是空串，没必要也不该去解析。
+            $span = $null
+            if ($existed) { $span = Get-JsonMemberSpan -Text $text -Name $objName }
             if ($existed -and -not $span.found) {
                 # 缺这个对象：新建一个，插到根对象开头
                 $inner = [ordered]@{}
@@ -490,6 +507,11 @@ function New-ConfigFileContent {
                     $nm = [string](Get-ObjectProp -Object $e -Name 'name')
                     $tpl = [string](Get-ObjectProp -Object $e -Name 'valueTemplate')
                     $val = Resolve-ConfigValue -Template $tpl -Provider $Provider -ApiKey $ApiKey -SelectedModel $SelectedModel
+                      if (Test-ConfigPlaceholderValue -Value $val) {
+                          # 没有真 key：这一项不写，别把占位提示当成值写进去
+                          [void]$changes.Add([pscustomobject]@{ name = $nm; from = '(跳过)'; to = '(未写入：本工具不写占位符，key 请你自己填)' })
+                          continue
+                      }
                     [void]$inner.Add($nm, (Get-EntryValueLiteral -Entry $e -Provider $Provider -ApiKey $ApiKey -SelectedModel $SelectedModel))
                     [void]$changes.Add([pscustomobject]@{ name = $nm; from = '(不存在)'; to = (Get-EntryDisplayValue -Entry $e -Provider $Provider -ApiKey $ApiKey -SelectedModel $SelectedModel) })
                 }
@@ -506,13 +528,21 @@ function New-ConfigFileContent {
                     $nm = [string](Get-ObjectProp -Object $e -Name 'name')
                     $tpl = [string](Get-ObjectProp -Object $e -Name 'valueTemplate')
                     $val = Resolve-ConfigValue -Template $tpl -Provider $Provider -ApiKey $ApiKey -SelectedModel $SelectedModel
+                      if (Test-ConfigPlaceholderValue -Value $val) {
+                          # 没有真 key：这一项不写，别把占位提示当成值写进去
+                          [void]$changes.Add([pscustomobject]@{ name = $nm; from = '(跳过)'; to = '(未写入：本工具不写占位符，key 请你自己填)' })
+                          continue
+                      }
                     [void]$map.Add($nm, (Get-EntryValueLiteral -Entry $e -Provider $Provider -ApiKey $ApiKey -SelectedModel $SelectedModel))
                     [void]$changes.Add([pscustomobject]@{ name = $nm; from = '(文件不存在)'; to = (Get-EntryDisplayValue -Entry $e -Provider $Provider -ApiKey $ApiKey -SelectedModel $SelectedModel) })
                 }
                 $block = ConvertTo-JsonObjectBlock -Map $map -Indent 2 -NewLine $nl
                 $fresh = [ordered]@{}
                 $fresh[$objName] = $block
-                $result.content = ConvertTo-JsonObjectBlock -Map $fresh -Indent 0 -NewLine $nl + $nl
+                # 必须加括号：否则「+ $nl」会作为额外位置参数传给命令，报
+                # 「A positional parameter cannot be found that accepts argument '+'」。
+                # 这条分支是「全新机器上第一次写配置」，以前被上面的空文本绑定错误挡着，从来没跑到过。
+                $result.content = (ConvertTo-JsonObjectBlock -Map $fresh -Indent 0 -NewLine $nl) + $nl
                 $result.changes = @($changes)
                 $result.ok = $true
                 return [pscustomobject]$result
@@ -534,6 +564,15 @@ function New-ConfigFileContent {
                 $e = $managed[$ent.name]
                 $nm = $ent.name
                 $newLiteral = Get-EntryValueLiteral -Entry $e -Provider $Provider -ApiKey $ApiKey
+                # 占位符不许覆盖已经填好的真实值：没给 key 时算出来的是「<在这里粘贴你的 API Key>」，
+                # 而文件里可能已经是用户自己填好的 key。拿占位符盖上去等于把能用的配置写坏；
+                # 复检还会反过来报「与目标渠道不一致」，再引导用户覆盖一次（实测踩到）。
+                $oldVal = ConvertFrom-JsonStringLiteral -Literal $ent.rawValue
+                $newVal = ConvertFrom-JsonStringLiteral -Literal $newLiteral
+                if (($newVal -match '^<.+>$') -and ($oldVal -ne '') -and ($oldVal -notmatch '^<.+>$')) {
+                    [void]$map.Add($nm, $ent.rawValue)
+                    continue
+                }
                 [void]$map.Add($nm, $newLiteral)
                 # 比较 JSON 字面量而不是模板解析值：rawValue 条目的模板是空的，
                 # 拿空值去比会每次都判定"有改动"，导致反复写入。
@@ -548,6 +587,10 @@ function New-ConfigFileContent {
             foreach ($e in @($Target.entries)) {
                 $nm = [string](Get-ObjectProp -Object $e -Name 'name')
                 if ($emitted.ContainsKey($nm)) { continue }
+                  # 没有真 key 时，占位提示不写进去（回落环境变量即可）
+                  $tpl2 = [string](Get-ObjectProp -Object $e -Name 'valueTemplate')
+                  $val2 = Resolve-ConfigValue -Template $tpl2 -Provider $Provider -ApiKey $ApiKey -SelectedModel $SelectedModel
+                  if (Test-ConfigPlaceholderValue -Value $val2) { continue }
                 [void]$map.Add($nm, (Get-EntryValueLiteral -Entry $e -Provider $Provider -ApiKey $ApiKey -SelectedModel $SelectedModel))
                 [void]$changes.Add([pscustomobject]@{
                         name = $nm; from = '(不存在)'
@@ -567,6 +610,11 @@ function New-ConfigFileContent {
             $nm = [string](Get-ObjectProp -Object $e -Name 'name')
             $tpl = [string](Get-ObjectProp -Object $e -Name 'valueTemplate')
             $val = Resolve-ConfigValue -Template $tpl -Provider $Provider -ApiKey $ApiKey -SelectedModel $SelectedModel
+                      if (Test-ConfigPlaceholderValue -Value $val) {
+                          # 没有真 key：这一项不写，别把占位提示当成值写进去
+                          [void]$changes.Add([pscustomobject]@{ name = $nm; from = '(跳过)'; to = '(未写入：本工具不写占位符，key 请你自己填)' })
+                          continue
+                      }
             $span = $null
             if ($existed) { $span = Get-JsonMemberSpan -Text $text -Name $nm }
             $newValueText = Get-EntryValueLiteral -Entry $e -Provider $Provider -ApiKey $ApiKey
@@ -607,6 +655,11 @@ function New-ConfigFileContent {
             $nm = [string](Get-ObjectProp -Object $e -Name 'name')
             $tpl = [string](Get-ObjectProp -Object $e -Name 'valueTemplate')
             $val = Resolve-ConfigValue -Template $tpl -Provider $Provider -ApiKey $ApiKey -SelectedModel $SelectedModel
+                      if (Test-ConfigPlaceholderValue -Value $val) {
+                          # 没有真 key：这一项不写，别把占位提示当成值写进去
+                          [void]$changes.Add([pscustomobject]@{ name = $nm; from = '(跳过)'; to = '(未写入：本工具不写占位符，key 请你自己填)' })
+                          continue
+                      }
             $old = ''
             $found = $false
             for ($k = 0; $k -lt $lines.Count; $k++) {
@@ -666,6 +719,11 @@ function Get-EntryValueLiteral {
     if ($null -ne $raw -and ([string]$raw) -ne '') { return [string]$raw }
     $tpl = [string](Get-ObjectProp -Object $Entry -Name 'valueTemplate')
     $val = Resolve-ConfigValue -Template $tpl -Provider $Provider -ApiKey $ApiKey -SelectedModel $SelectedModel
+                      if (Test-ConfigPlaceholderValue -Value $val) {
+                          # 没有真 key：这一项不写，别把占位提示当成值写进去
+                          [void]$changes.Add([pscustomobject]@{ name = $nm; from = '(跳过)'; to = '(未写入：本工具不写占位符，key 请你自己填)' })
+                          continue
+                      }
     return (ConvertTo-JsonStringLiteral -Value $val)
 }
 
@@ -677,6 +735,11 @@ function Get-EntryDisplayValue {
     $tpl = [string](Get-ObjectProp -Object $Entry -Name 'valueTemplate')
     $nm = [string](Get-ObjectProp -Object $Entry -Name 'name')
     $val = Resolve-ConfigValue -Template $tpl -Provider $Provider -ApiKey $ApiKey -SelectedModel $SelectedModel
+                      if (Test-ConfigPlaceholderValue -Value $val) {
+                          # 没有真 key：这一项不写，别把占位提示当成值写进去
+                          [void]$changes.Add([pscustomobject]@{ name = $nm; from = '(跳过)'; to = '(未写入：本工具不写占位符，key 请你自己填)' })
+                          continue
+                      }
     return (Get-MaskedConfigValue -Name $nm -Value $val)
 }
 

@@ -37,11 +37,14 @@ try {
     Write-Host ('  仓库根：' + $Root)
 
     # 要扫的文件：仓库里的文本文件，排除运行时产物目录
-    $files = @(Get-ChildItem -Recurse -File | Where-Object {
-            $_.FullName -notmatch '\\out\\|\\build\\dist\\|\\.git\\' -and
+    # 注意：先按目录排除，再按扩展名/文件名筛选 —— 两步写在一个 Where-Object 里时，
+    # 那个 -or 会让"文件名是 LICENSE"这个条件绕过目录排除（实测把 out\ 下第三方 LICENSE 也扫进来了）。
+    $inRepo = @(Get-ChildItem -Recurse -Force -File | Where-Object { $_.FullName -notmatch '\\out\\|\\build\\dist\\|\\.git\\' })
+    $files = @($inRepo | Where-Object {
             ($_.Extension -in @('.md', '.ps1', '.psm1', '.js', '.json', '.html', '.css', '.yml', '.yaml', '.txt', '.bat', '.cmd')) -or
-            $_.Name -in @('LICENSE', '.gitignore', '.gitattributes', '.editorconfig')
+            ($_.Name -in @('LICENSE', '.gitignore', '.gitattributes', '.editorconfig'))
         })
+
     Write-Host ('  待扫文件：' + $files.Count + ' 个')
     $paths = $files.FullName
 

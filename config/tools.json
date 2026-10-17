@@ -68,7 +68,7 @@
       "guide": {
         "steps": [
           { "section": "install", "title": "装好它", "check": "installed", "hint": "官方原生安装器不需要 Node.js，装到 %USERPROFILE%\\.local\\bin，不需要管理员权限。" },
-          { "section": "configure", "title": "配好渠道和模型", "check": "configured", "hint": "照 DeepSeek 官方说明设好下面这些环境变量。本工具不写 settings.json、也不经手你的 key。" },
+          { "section": "configure", "title": "配好渠道和模型", "check": "configured", "hint": "选渠道 → 点「写入这个工具的配置」：base_url 与四个模型名会自动写进 settings.json 的 env 块；没提供 key 时那一项留占位符，你之后自己贴。key 的值本工具既不保存也不写日志。" },
           { "section": "launch", "title": "启动，开始对话", "check": "launch", "hint": "第一次启动会弹一个交互式引导，按它走一遍就行。" }
         ]
       },
@@ -578,7 +578,7 @@
             "detail": "拉取最新 Release 的 Windows 便携版 zip，解压到 %LOCALAPPDATA%\\Programs\\cc-switch。GitHub 直连不通时会自动改用国内加速源，不需要单独配一层。",
             "type": "github-release",
             "repo": "farion1231/cc-switch",
-            "assetPattern": "*windows*x64*.zip",
+            "assetPattern": "^CC-Switch-.*-Windows(-x64)?-Portable\\.zip$",
             "archiveType": "zip",
             "installRoot": "%LOCALAPPDATA%\\Programs\\cc-switch",
             "flattenSingleRoot": true,

@@ -256,14 +256,25 @@ if (-not [string]::IsNullOrEmpty($Uninstall)) {
 Write-Line ''
 Write-Line 'LLMKit · 大模型工具引导式一键安装器' 'White'
 Write-Line ('引擎 ' + (Get-LLMKitVersion) + ' / 安装引擎 ' + (Get-LLMKitInstallVersion) + ' / 目标：' + $env:COMPUTERNAME) 'DarkGray'
+# 这一趟到底会不会动系统？横幅与结尾都按它来说，别再一律叫「演练」。
+# -Verify / -Diagnose / -ShowProviders 是纯读的活儿：它们真的会跑（跑命令、读版本、查文件），
+# 但一个字都不写。以前不区分，一律打「演练（DryRun）」，结尾还劝人「加 -Apply 真正执行」—
+# 而 -Apply 对复检根本没有对应动作，用户会以为自己刚才什么都没验证。
+$writesAnything = [bool]($IncludeTools -or $Configure)
 $modeText = '演练（DryRun，不会改动系统）'
 $modeColor = 'Green'
 if (-not [string]::IsNullOrEmpty($SandboxRoot)) {
     $modeText = '沙箱安装（真的下载解压并验证，但不写注册表、不改 PATH）'
     $modeColor = 'Yellow'
-} elseif ($Apply) {
+} elseif ($Apply -and $writesAnything) {
     $modeText = '执行（-Apply，会改动系统）'
     $modeColor = 'Yellow'
+} elseif (-not $writesAnything) {
+    if ($Diagnose) { $modeText = '只读诊断（真的跑检查，不装不改）' }
+    elseif ($Verify -or $VerifyOnly) { $modeText = '只读复检（真的跑验证，不装不改）' }
+    elseif ($ShowProviders) { $modeText = '渠道引导（只给入口和链接）' }
+    else { $modeText = '只读运行（不装不改）' }
+    $modeColor = 'Green'
 }
 Write-Line ('模式：' + $modeText) $modeColor
 Write-Line ('-' * 72) 'DarkGray'
@@ -428,7 +439,11 @@ if ($configSetup -and $configSetup.summary) { $failedCount += [int]$configSetup.
 
 if (-not $Apply -and [string]::IsNullOrEmpty($SandboxRoot)) {
     Write-Line ''
-    Write-Line '以上是演练结果，系统没有任何改动。确认无误后加 -Apply 真正执行。' 'Yellow'
+    if ($writesAnything) {
+        Write-Line '以上是演练结果，系统没有任何改动。确认无误后加 -Apply 真正执行。' 'Yellow'
+    } else {
+        Write-Line '以上是只读结果：没有安装、没有改配置。这类操作本来就不需要 -Apply。' 'Yellow'
+    }
 }
 
 # 退出码约定：0 一切正常 / 1 有阶段失败 / 2 体检有阻断项 / 3 复检不通过

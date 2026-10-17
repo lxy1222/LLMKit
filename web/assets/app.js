@@ -140,8 +140,8 @@
     if (actionId !== 'tool-resolve-conflicts') { return ''; }
     var d = (S.detail && extra && extra.targetId) ? S.detail[extra.targetId] : null;
     if (!d) { return ''; }
-    var moves = (d.conflictMove || []).map(function (x) { return '<li>' + mono(x) + '</li>'; }).join('');
-    return '<div class="meta" style="margin-top:8px"><b>会保留：</b>' + mono(d.conflictKeep || '（PATH 命中的那份）') + '</div>' +
+    var moves = (d.conflictMove || []).map(function (x) { return '<li>' + mono(maskUserPath(x)) + '</li>'; }).join('');
+    return '<div class="meta" style="margin-top:8px"><b>会保留：</b>' + mono(maskUserPath(d.conflictKeep) || '（PATH 命中的那份）') + '</div>' +
       (moves ? '<div class="meta">会挪到备份区（不删除，事后可在历史里还原）：</div><ul class="issues">' + moves + '</ul>' : '') +
       '<div class="note">只搬不删：被挪走的那几份不会消失，还原时按会话日志放回去。</div>';
   }
@@ -163,7 +163,7 @@
           '<li>被替换或移除的东西会先挪到备份区（只搬不删），并按会话写进日志。</li>' +
           '<li>事后可以在下面的日志里看到全过程，也可以按日志一键还原。</li>' +
           '</ul>' +
-          '<div class="cmd">' + esc(p.commandLine) + '</div>' +
+          '<div class="cmd">' + esc(maskUserPath(p.commandLine)) + '</div>' +
           '<div class="note">这条就是即将执行的原文，你可以自己复制去命令行重跑。</div>' +
           conflictDetailHtml(actionId, extra);
         showModal(actionMeta(actionId).label + (extra && extra.targetId ? ' · ' + extra.targetId : ''), html, '确认执行', function () {
@@ -247,8 +247,8 @@
         '<li>会开一个<b>新窗口</b>来跑它。关掉那个窗口不影响本工具，也不影响已经装好的东西。</li>' +
         '<li>窗口会留在那儿（成功失败都留），这样你看得到输出和报错。</li>' +
         '</ul>' +
-        '<div class="cmd">' + esc(p.commandLine) + '</div>' +
-        '<div class="note">启动目录：' + esc(p.workingDir || '（未指定）') + '</div>' +
+        '<div class="cmd">' + esc(maskUserPath(p.commandLine)) + '</div>' +
+        '<div class="note">启动目录：' + esc(maskUserPath(p.workingDir) || '（未指定）') + '</div>' +
         (p.uiHint ? '<div class="note">' + esc(p.uiHint) + '</div>' : '');
       showModal((mode === 'smoke' ? '跑一次冒烟 · ' : '启动 · ') + label, html, mode === 'smoke' ? '跑一次' : '启动', function () {
         hideModal();
@@ -282,11 +282,11 @@
     }
     var cmds = '';
     if (L.interactiveCommand) {
-      cmds += '<div class="meta">启动命令：' + mono(L.interactiveCommand) +
+      cmds += '<div class="meta">启动命令：' + mono(maskUserPath(L.interactiveCommand)) +
         ' <button class="tiny" data-copy="' + esc(L.interactiveCommand) + '">复制</button></div>';
     }
     if (L.smokeCommand) {
-      cmds += '<div class="meta">冒烟命令：' + mono(L.smokeCommand) +
+      cmds += '<div class="meta">冒烟命令：' + mono(maskUserPath(L.smokeCommand)) +
         ' <button class="tiny" data-copy="' + esc(L.smokeCommand) + '">复制</button></div>';
     }
     // 服务型工具（例如 dsh web）会占一个端口：把最终选定的地址写出来，
@@ -338,9 +338,10 @@
         : '';
       return '<div class="card"><h3><a href="#/tool/' + esc(t.id) + '">' + esc(t.name) + '</a>' +
         pill(label, cls) + '</h3>' +
-        '<div class="meta">' + esc(t.executable || t.vendor || '') + '</div>' + manages + issues +
+        '<div class="meta">' + esc(maskUserPath(t.executable) || t.vendor || '') + '</div>' + manages + issues +
         '<div class="acts">' +
-        '<button class="primary" data-open="' + esc(t.id) + '">' + (t.installed ? '打开 / 重装' : '打开 / 安装') + '</button>' +
+        '<button class="primary" data-open="' + esc(t.id) + '">' + (t.installed ? '打开 / 重装' : (t.canAutoInstall === false ? '打开 / 手动安装' : '打开 / 安装')) + '</button>' +
+        (t.installed ? '<button class="tiny" data-open="' + esc(t.id) + '">配置</button>' : '') +
         launchBtn +
         '<button class="tiny" data-act="tool-verify" data-target="' + esc(t.id) + '">验证</button>' +
         arts +
@@ -357,6 +358,9 @@
 
     // 刷新按钮固定在顶栏（见 index.html），这里不再生成一个同 id 的按钮
     $('app').innerHTML =
+      '<section><div class="callout"><b>注意：</b>先安装 Node.js，再安装 DeepSeek Harness；' +
+      '完成之后，其他模型可以让 Harness 给你装（但要花费 token），不必局限于此项目。</div></section>' +
+
       '<section><h2>智能体（你要用它们干活）</h2><div class="grid">' +
       (agents || '<div class="card">没有工具配置</div>') + '</div></section>' +
 
@@ -404,7 +408,7 @@
 
   function installsHtml(d) {
     var rows = (d.installations || []).map(function (i) {
-      return '<tr><td>' + esc(i.source || '') + '</td><td class="mono">' + esc(i.path || '') + '</td>' +
+      return '<tr><td>' + esc(i.source || '') + '</td><td class="mono">' + esc(maskUserPath(i.path)) + '</td>' +
         '<td>' + esc(i.version || '') + '</td></tr>';
     }).join('');
     if (rows) {
@@ -412,7 +416,7 @@
         rows + '</tbody></table>';
     }
     return '<div class="card"><div class="meta">没有找到已安装的副本。' +
-      (d.executable ? '不过命令 <span class="mono">' + esc(d.executable) + '</span> 能解析到。' : '') +
+      (d.executable ? '不过命令 <span class="mono">' + esc(maskUserPath(d.executable)) + '</span> 能解析到。' : '') +
       '</div></div>';
   }
 
@@ -509,6 +513,8 @@
       ? '<div class="callout">另有 ' + onlyGuide.length + ' 处需要你<b>自己在它的界面里填</b>：' +
         esc(onlyGuide.map(function (c) { return c.label; }).join('、')) + '。那种地方本工具不碰。</div>'
       : '';
+    var manualHtml = manualBlockHtml(d, id);
+    var pendingHtml = keyHelpBlock(d, ctx);
 
     if (guidanceOnly) {
       // 只给值：渠道与模型仍然可选（选完值会跟着变），但没有"写入"按钮
@@ -557,7 +563,8 @@
       (m.writable ? '' : '<button class="tiny" data-copy="' + esc(ctx.st.model || '') + '">复制模型名</button>') +
       '<span class="note">只写这一个工具。点下去会先弹确认框，里面是服务端给出的命令原文。</span>' +
       '</div>' +
-      targetsNote + guideNote +
+      '<div class="callout"><b>key 怎么填：</b>打开 <code>%USERPROFILE%\\.claude\\settings.json</code>，把 <code>ANTHROPIC_AUTH_TOKEN</code> 那一行里的 <code>&lt;在这里粘贴你的 API Key&gt;</code> 换成你的真 key，保存，然后重开 Claude Code。</div>' +
+      pendingHtml + targetsNote + guideNote +
       '<div class="callout">这里填的是<b>变量名</b>，不是 key。key 的值留在你自己的环境变量里，' +
       '本工具只在写配置那一刻读一次。</div>' +
       '<details class="howto"><summary>key 到底怎么放进环境变量？（三种办法）</summary>' +
@@ -579,10 +586,143 @@
       '本工具既不上传也不保存，连「帮你写进环境变量」都不做 —— 那一步就要经手明文 key 了。' +
       '另外：别把 key 贴进任何网页，包括这个页面。</p>' +
       '</div></details>' +
+      manualHtml +
       '</div>';
   }
 
 
+  // 自动写入为主之后，官方那套「手填」说明仍然有用（有哪些变量、官方文档在哪）。
+  // 收进折叠块：默认不占地，想核对或者想手填的人点开就有。
+  function manualBlockHtml(d, id) {
+    var integ = integrationFor(id);
+    if (!integ) { return ''; }
+    var env = integ.env || [];
+    var steps = integ.steps || [];
+    if (!env.length && !steps.length) { return ''; }
+    var inner = '';
+    if (integ.docUrl) {
+      inner += '<div class="meta">依据：<a href="' + esc(integ.docUrl) + '" target="_blank" rel="noreferrer">' +
+        esc(d.name) + ' 官方接入说明' + (integ.docSection ? ' · ' + esc(integ.docSection) : '') + '</a>' +
+        (integ.checkedAt ? '（核对于 ' + esc(integ.checkedAt) + '）' : '') + '</div>';
+    }
+    if (env.length) {
+      var lines = env.map(function (e) { return '$env:' + e.name + '="' + e.value + '"'; }).join('\n');
+      var rows = env.map(function (e) {
+        return '<tr><td class="mono">' + esc(e.name) + '</td>' +
+          '<td class="mono">' + esc(e.value) + '</td>' +
+          '<td><button class="tiny" data-copy="' + esc(e.value) + '">复制值</button></td></tr>';
+      }).join('');
+      inner += '<pre class="cmdbig">' + esc(lines) + '</pre>' +
+        '<div class="acts"><button class="tiny" data-copy="' + esc(lines) + '">复制全部 ' + env.length + ' 行</button></div>' +
+        '<table class="tbl"><thead><tr><th>变量</th><th>值</th><th></th></tr></thead><tbody>' + rows + '</tbody></table>';
+    }
+    if (steps.length) { inner += stepsList(steps); }
+    if (integ.note) { inner += '<div class="callout">' + esc(integ.note) + '</div>'; }
+    return '<details class="howto"><summary>也可以照 ' + esc(d.name) + ' 官方说明手动填（' +
+      (env.length ? env.length + ' 个环境变量' : '几个步骤') + '）</summary>' +
+      '<div class="howto-body">' + inner + '</div></details>';
+  }
+  // 路径一律用模版写法（%USERPROFILE%\...），显示和复制都不带本机用户名。
+  // 复制出去的命令是给 PowerShell 用的，所以再把 %VAR% 换成 $env:VAR。
+  function psPathOf(tpl) {
+    var s = String(tpl || '');
+    s = s.replace(/%USERPROFILE%/ig, function () { return '$env:USERPROFILE'; });
+    s = s.replace(/%LOCALAPPDATA%/ig, function () { return '$env:LOCALAPPDATA'; });
+    s = s.replace(/%APPDATA%/ig, function () { return '$env:APPDATA'; });
+    return s;
+  }
+
+  // key 还停在占位符时，把「改哪个文件、改哪一行、改完做什么」直接写在界面里。
+  // 判定来自服务端（/api/tool/<id> 的 configTargets[].pending），界面不自己猜。
+  function pendingKeyCallout(d, ctx) {
+    var ts = d.configTargets || [];
+    var hits = [];
+    for (var i = 0; i < ts.length; i++) {
+      var pend = ts[i].pending || [];
+      for (var k = 0; k < pend.length; k++) { hits.push({ t: ts[i], item: pend[k] }); }
+    }
+    if (!hits.length) { return ''; }
+    var names = hits.map(function (h) { return h.item.name; }).join('、');
+    var t0 = hits[0].t;
+    var fileTpl = t0.path || '';
+    var openCmd = 'notepad "' + psPathOf(fileTpl) + '"';
+    var envName = (ctx && ctx.st && ctx.st.tokenEnv) ? ctx.st.tokenEnv : 'DEEPSEEK_API_KEY';
+    var setxCmd = 'setx ' + envName + ' "sk-你的key"';
+    return '<div class="callout warn">' +
+      '<b>还有 ' + hits.length + ' 个占位符没填（' + esc(names) + '）—— 现在启动会认证失败（401）。</b>' +
+      '<div class="meta">两种填法，选一种就行：</div>' +
+      '<ol class="steps">' +
+      '<li><span class="stepdo">直接改文件（最快）</span>' +
+      '<div class="meta">用记事本打开 <code>' + esc(fileTpl) + '</code>，把 <code>' + esc(hits[0].item.placeholder) + '</code> 换成你的真 key，保存；然后重开 Claude Code。</div>' +
+      '<div class="mkcmd">' + esc(openCmd) + '</div>' +
+      '<div class="acts"><button class="tiny" data-copy="' + esc(openCmd) + '">复制这条命令</button>' +
+      '<button class="tiny" data-copy="' + esc(fileTpl) + '">复制路径</button></div></li>' +
+      '<li><span class="stepdo">先放进环境变量，再让本工具写</span>' +
+      '<div class="meta">在 PowerShell 里执行下面这条，然后点上面的「写入这个工具的配置」——这样 key 不用贴进这个页面。</div>' +
+      '<div class="mkcmd">' + esc(setxCmd) + '</div>' +
+      '<div class="acts"><button class="tiny" data-copy="' + esc(setxCmd) + '">复制这条命令</button></div></li>' +
+      '</ol>' +
+      '<div class="meta">两条路走一条就够：直接改了文件，就不必再点写入。</div>' +
+      '</div>';
+  }
+  // 界面上不出现本机用户名：把绝对的用户目录改写成 %USERPROFILE% / %LOCALAPPDATA% / %APPDATA%。
+  // 只用于「给人看」的文本；按钮里 data-copy 的值仍是真实路径，否则粘出去的命令跑不了。
+  function maskUserPath(s) {
+    var t = String(s == null ? '' : s);
+    t = t.replace(/([A-Za-z]:\\Users\\)[^\\]+\\AppData\\Local\\/g, function () { return '%LOCALAPPDATA%\\'; });
+    t = t.replace(/([A-Za-z]:\\Users\\)[^\\]+\\AppData\\Roaming\\/g, function () { return '%APPDATA%\\'; });
+    t = t.replace(/([A-Za-z]:\\Users\\)[^\\]+\\/g, function () { return '%USERPROFILE%\\'; });
+    return t;
+  }
+
+  // 常驻说明：key 存在哪个文件的哪个字段、以后想换怎么改。
+  // 没填好时交给 pendingKeyCallout 那条警告，这里只给「已经填好」的折叠说明。
+  function keyHelpBlock(d, ctx) {
+    var warnHtml = pendingKeyCallout(d, ctx);
+    if (warnHtml) { return warnHtml; }
+    var ts = d.configTargets || [];
+    var target = null;
+    for (var i = 0; i < ts.length; i++) {
+      var mk = ts[i].managedKeys || [];
+      if (ts[i].kind !== 'guidance' && mk.length) { target = ts[i]; break; }
+    }
+    if (!target) { return ''; }
+    var fileTpl = target.path || '';
+    var openCmd = 'notepad "' + psPathOf(fileTpl) + '"';
+    var mk2 = target.managedKeys || [];
+    var tokenName = '';
+    for (var k = 0; k < mk2.length; k++) { if (/(TOKEN|KEY)/i.test(mk2[k])) { tokenName = mk2[k]; break; } }
+    var envName = (ctx && ctx.st && ctx.st.tokenEnv) ? ctx.st.tokenEnv : 'DEEPSEEK_API_KEY';
+    var setxCmd = 'setx ' + envName + ' "sk-你的key"';
+    var total = (target.managedKeys || []).length;
+    var done = Number(target.filled || 0);
+    var stateLine;
+    if (!target.exists) {
+      stateLine = '<div class="meta">状态：这个配置文件还没生成 —— 点上面的「写入这个工具的配置」就会建出来（只写 base_url 与模型名；key 不写，你自己填）。</div>';
+    } else if (done >= total) {
+      stateLine = '<div class="meta">状态：<code>' + esc(fileTpl) + '</code> 里的 ' + total + ' 个受管字段都已填好（含 key）。</div>';
+    } else {
+      stateLine = '<div class="meta">状态：文件在，但受管字段只填了 ' + done + ' / ' + total + ' —— 缺的那个多半就是 key。</div>';
+    }
+    return '<details class="howto"><summary>key 放在哪、以后想换怎么改</summary>' +
+      '<div class="howto-body">' +
+      '<div class="meta">文件：<code>' + esc(fileTpl) + '</code> ' +
+      '<button class="tiny" data-copy="' + esc(fileTpl) + '">复制路径</button></div>' +
+      stateLine +
+      '<div class="meta" style="margin-top:8px"><b>想换 key 的话，两种办法选一种：</b></div>' +
+      '<ol class="steps">' +
+      '<li><span class="stepdo">直接改文件</span>' +
+      '<div class="meta">用记事本打开上面那个文件，把 <code>' + esc(tokenName || 'key') + '</code> 那一行的值换成新 key，保存，重开 Claude Code。</div>' +
+      '<div class="mkcmd">' + esc(openCmd) + '</div>' +
+      '<div class="acts"><button class="tiny" data-copy="' + esc(openCmd) + '">复制这条命令</button></div></li>' +
+      '<li><span class="stepdo">先放进环境变量，再让本工具写</span>' +
+      '<div class="meta">执行下面这条，然后点上面的「写入这个工具的配置」——key 不用贴进这个页面。</div>' +
+      '<div class="mkcmd">' + esc(setxCmd) + '</div>' +
+      '<div class="acts"><button class="tiny" data-copy="' + esc(setxCmd) + '">复制这条命令</button></div></li>' +
+      '</ol>' +
+      '<div class="meta">注：界面上的路径一律写成 %USERPROFILE% 这类模版，不显示你的用户名。</div>' +
+      '</div></details>';
+  }
   function bindCfgPanel(d) {
     var id = d.id;
     var ctx = cfgState(id);
@@ -682,7 +822,7 @@
   // 标题下的一行元信息：把原来的「状态」整节压成一行，省掉一节的空间
   function toolMetaLine(d) {
     var bits = [];
-    bits.push('命令 ' + mono(d.executable || '（未找到）'));
+    bits.push('命令 ' + mono(maskUserPath(d.executable) || '（未找到）'));
     bits.push('副本 ' + (d.installCount || 0));
     bits.push('残留 ' + (d.artifacts && d.artifacts.length ? d.artifacts.length + ' 组' : '无'));
     var line = '<div class="meta toolstat">' + bits.join(' · ') + '</div>';
@@ -912,7 +1052,12 @@
 
   function stepSection(d, id, s, index, opts) {
     // 配了官方教程的那一段：本工具不写文件，也无从判断你到底设没设环境变量 —— 如实说"需要你确认"
-    var st = (s.section === 'configure' && (opts.tutorial || opts.integration || opts.inApp))
+    // 配置段到底是「教你自己填」还是「我帮你写」：只要这个工具存在已验证的写入目标
+    // （opts.autoWrite），就优先走写入卡片，官方接入说明在卡片里降级成折叠块。
+    // 上一版只挡住了 tutorial 标记、漏了 integration —— DeepSeek 恰好给 Claude Code 登记了
+    // 官方接入说明，于是 (tutorial || integration) 仍为真，界面还是那套教程。
+    var tutorialCard = (!!opts.inApp) || ((opts.tutorial || !!opts.integration) && !opts.autoWrite);
+    var st = (s.section === 'configure' && tutorialCard)
       ? { cls: '', text: '需要你确认' }
       : guideStepState(d, s.check);
     var pillHtml = st.text ? ' ' + pill(st.text, st.cls) : '';
@@ -925,7 +1070,7 @@
       // 否则走渠道/模型卡片
       body = opts.inApp
         ? inAppCardBody(d)
-        : (opts.tutorial || opts.integration)
+        : tutorialCard
           ? integrationCardBody(d, opts.integration)
           : cfgCardBody(d, opts.guidanceOnly);
     } else if (s.section === 'launch') {
@@ -972,11 +1117,11 @@
     var warn = '';
     if (d.conflict) {
       var moves = (d.conflictMove || []).map(function (x) {
-        return '<li>' + mono(x) + '</li>';
+        return '<li>' + mono(maskUserPath(x)) + '</li>';
       }).join('');
       warn = '<div class="callout warn"><b>检测到多份安装共存</b>（' + (d.installCount || 0) + ' 份）。' +
         '它们会互相顶掉 —— 新装的命令可能被旧副本挡住。' +
-        '<div class="meta" style="margin-top:8px"><b>会保留：</b>' + mono(d.conflictKeep || '（PATH 命中的那份）') + '</div>' +
+        '<div class="meta" style="margin-top:8px"><b>会保留：</b>' + mono(maskUserPath(d.conflictKeep) || '（PATH 命中的那份）') + '</div>' +
         (moves ? '<div class="meta">会挪到备份区（不删除，可还原）：</div><ul class="issues">' + moves + '</ul>' : '') +
         '<div class="acts" style="margin-top:8px">' +
         '<button class="primary" id="do-conflict">合并多份副本</button>' +
@@ -1002,7 +1147,9 @@
 
     var installBtn = canInstall
       ? '<button class="primary" id="do-install">' + (d.installed ? '重装' : '安装') + '</button>'
-      : '';
+      : (d.manualUrl
+        ? '<button class="primary" data-open-url="' + esc(d.manualUrl) + '">打开官网下载页</button>'
+        : '');
 
     // 安装这一段的内部零件，两种排版共用（分段式包在 card 里，经典式直接挂在 section 下）
     var tiersHtml = tiers.length
@@ -1015,13 +1162,19 @@
         : '') +
       (canVerify ? '<button id="do-verify">验证可用性</button>' : '') +
       '</div>';
-    var installNoteHtml = '<div class="callout">安装 / 重装会按选中的这一层来。<b>重装</b>会先把旧的副本挪到备份区，再装新的。</div>';
+    var installNoteHtml = canInstall
+      ? '<div class="callout">安装 / 重装会按选中的这一层来。<b>重装</b>会先把旧的副本挪到备份区，再装新的。</div>'
+      : '<div class="callout">这个工具<b>只能你自己装</b>：点上面的「打开官网下载页」下官方安装器，按它走完；本工具不代跑第三方安装器。装完回这里点「验证可用性」。</div>';
     var installCardHtml = '<div class="card">' + tiersHtml + installOptsHtml + installNoteHtml + '</div>';
 
     var stepList = (d.guide && d.guide.steps) || [];
     var stepLayout = useStepLayout(d);
     // 这个工具本工具一个字节都不写（全是 guidance 目标）→ 配置那一段只给值不给写入按钮
     var guidanceOnly = (d.configTargets || []).filter(function (c) { return c.kind !== 'guidance'; }).length === 0;
+    // 有「已验证 + 非 guidance」的写入目标 → 这个工具的配置本工具真的能自动写。
+    // 那就别让 configureMode:tutorial 把写入按钮挡在界外：Claude Code 正是这种 ——
+    // writes 里 6 个字段 verified:true，却被 tutorial 标记挡掉，界面上只剩教你自己填。
+    var canAutoWrite = (d.configTargets || []).filter(function (c) { return c.kind !== 'guidance' && c.verified; }).length > 0;
     var crumb = '<div class="crumb"><a href="#/">← 返回首页</a></div>';
 
     // 分段式：页面本身就是步骤。编号由顺序生成，所以每个工具步数不同也不会错乱。
@@ -1031,7 +1184,8 @@
           installHtml: installCardHtml,
           guidanceOnly: guidanceOnly,
           integration: integrationFor(id),
-          tutorial: (d.configureMode === 'tutorial'),
+          tutorial: (d.configureMode === 'tutorial') && !canAutoWrite,
+          autoWrite: canAutoWrite,
           // 这一步要做的事在别的工具界面里（cc-switch 那类）→ 给步骤，不给渠道卡片
           inApp: d.inApp
         });
@@ -1335,6 +1489,11 @@
     }
     if (b.hasAttribute('data-open')) {
       location.hash = '#/tool/' + b.getAttribute('data-open');
+      return;
+    }
+    if (b.hasAttribute('data-open-url')) {
+      try { window.open(b.getAttribute('data-open-url'), '_blank', 'noreferrer'); }
+      catch (e) { toast('打不开，请手动访问'); }
       return;
     }
     if (b.hasAttribute('data-restore')) {

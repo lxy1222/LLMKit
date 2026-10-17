@@ -329,6 +329,18 @@ Assert-Equal 'm1' (Resolve-ConfigValue -Template '{provider.models[0]}' -Provide
 Assert-Equal 'm2' (Resolve-ConfigValue -Template '{provider.models[1]}' -Provider $fprov) '解析数组下标 1'
 Assert-Equal 'KEY1' (Resolve-ConfigValue -Template '{key}' -Provider $fprov -ApiKey 'KEY1') '解析 key'
 Assert-Equal '<在这里粘贴你的 API Key>' (Resolve-ConfigValue -Template '{keyOrPlaceholder}' -Provider $fprov) '未提供 key 时给占位提示'
+
+# 占位符只用于"展示"，绝不能写进配置文件 —— 它一旦落进 env 就会被当成真 key，
+# 实测把 Claude Code 直接弄挂（Invalid auth token, 17 characters）。
+$provDeep = (Get-LLMKitProviderList -ConfigRoot $projectRoot | Where-Object { $_.id -eq 'deepseek' })
+$ccTargets = @(Get-ConfigTargets -ConfigRoot $projectRoot -ToolIds @('claude-code'))
+Assert-True ($ccTargets.Count -ge 1) 'claude-code 有配置目标'
+$noKey = New-ConfigFileContent -Target $ccTargets[0] -Provider $provDeep -ApiKey '' -SelectedModel 'deepseek-flash'
+Assert-True ($noKey.ok) ('不给 key 时仍能算出配置：' + $noKey.error)
+Assert-True (-not ($noKey.content -match '在这里粘贴')) '没给 key 时，配置里不会出现占位符'
+Assert-True ($noKey.content -match 'api\.deepseek') '没给 key 时，base_url 照写'
+$withKey = New-ConfigFileContent -Target $ccTargets[0] -Provider $provDeep -ApiKey 'sk-test-123' -SelectedModel 'deepseek-flash'
+Assert-True ($withKey.content -match 'sk-test-123') '给了 key 时，key 会被写进去'
 Assert-Equal '' (Resolve-ConfigValue -Template '{provider.nope}' -Provider $fprov) '未知字段返回空而不是乱塞值'
 Assert-Equal '' (Resolve-ConfigValue -Template '{provider.models[9]}' -Provider $fprov) '数组越界返回空'
 Assert-Equal '纯文本' (Resolve-ConfigValue -Template '纯文本' -Provider $fprov) '无模板原样返回'

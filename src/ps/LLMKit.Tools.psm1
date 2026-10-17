@@ -1038,7 +1038,17 @@ function New-LLMKitToolPlan {
 
         if ($tier -and -not $NoVersionResolve -and @('github-release', 'portable-zip') -contains [string]$tier.type) {
             $item | Add-Member -NotePropertyName __mirrorRewriters -NotePropertyValue $mirrorRewriters -Force
-            $download = Resolve-ItemDownload -Item $item -MirrorRewriters $mirrorRewriters -Proxy $Proxy -TimeoutSec $TimeoutSec
+            # 解析资产只影响"能不能自动装"，不该连累整份计划：出错就退化成"需在线重试"，
+            # 这样人工引导层仍然可选 —— 以前这里一抛错，工具页两个模式会一起变成"计划失败"。
+            try {
+                $download = Resolve-ItemDownload -Item $item -MirrorRewriters $mirrorRewriters -Proxy $Proxy -TimeoutSec $TimeoutSec
+            } catch {
+                $download = [pscustomobject]([ordered]@{
+                        ok = $false; kind = [string]$tier.type; version = ''; fileName = ''
+                        urls = @(); checksumUrl = ''; sizeBytes = $null
+                        error = [string]$_.Exception.Message
+                    })
+            }
             $item = [pscustomobject]([ordered]@{
                     id = $item.id; name = $item.name; vendor = $item.vendor; purpose = $item.purpose
                     installed = $item.installed; version = $item.version; installCount = $item.installCount

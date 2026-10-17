@@ -332,11 +332,12 @@ check('步骤状态跟着安装状态走', cl.indexOf('该你了') >= 0 || cl.in
   check('② 段含 CLAUDE_CODE_ 三个专用变量',
     cl.indexOf('CLAUDE_CODE_SUBAGENT_MODEL') >= 0 && cl.indexOf('CLAUDE_CODE_EFFORT_LEVEL') >= 0 &&
     cl.indexOf('CLAUDE_CODE_AUTO_COMPACT_WINDOW') >= 0);
-  check('② 段不再有"写入这个工具的配置"按钮', cl.indexOf('cfgWrite-claude-code') < 0);
-  check('② 段不再要求填变量名（不写文件就不需要）', cl.indexOf('cfgEnv-claude-code') < 0);
-  check('② 段说明本工具不写 settings.json', cl.indexOf('不写' ) >= 0 && cl.indexOf('settings.json') >= 0);
-  check('② 段状态如实写"需要你确认"', cl.indexOf('需要你确认') >= 0);
-  check('② 段给了"复制全部"按钮', cl.indexOf('复制全部') >= 0);
+  // 这一轮改成「自动写入为主」：② 段有写入按钮，写的是 base_url 与模型名；key 不写（不写占位符）
+  check('② 段有「写入这个工具的配置」按钮', cl.indexOf('cfgWrite-claude-code') >= 0);
+  check('② 段可以填存 key 的变量名', cl.indexOf('cfgEnv-claude-code') >= 0);
+  check('② 段讲清了写的是 settings.json', cl.indexOf('settings.json') >= 0);
+  check('② 段仍给出官方的环境变量清单（复制全部）', cl.indexOf('复制全部') >= 0);
+  check('② 段提醒 key 不会以占位符写进去', cl.indexOf('占位符') >= 0 || cl.indexOf('不写 key') >= 0 || cl.indexOf('key 不写') >= 0);
 
   // --- 工具页：cc-switch（状态以接口为准，不假定本机装了）---
   // 它是配套工具，页面被简化成 ①装 ②在它界面里加供应商 ③打开它 + 折叠维护区；
@@ -719,8 +720,8 @@ check('首页卡片的启动按钮与安装状态一致', apiCl2.installed || el
     await wait('工具页渲染 ' + tid, () => el('app').innerHTML.indexOf('cfgProvider-') >= 0, 20000);
     if (el('app').innerHTML.indexOf('cfgWrite-') >= 0) { writeButtons++; }
   }
-  check('tutorial 的三个页面没有写入按钮', writeButtons === 0, '有写入按钮的页数=' + writeButtons);
-  check('tutorial 页面不出现「写入这个工具的配置」字样', el('app').innerHTML.indexOf('写入这个工具的配置') < 0);
+  // 现状：只有 Claude Code 这一页改成自动写入（② 段有写入按钮）；OpenCode / Codex 仍是纯教程
+  check('tutorial 里只有 Claude Code 有写入按钮', writeButtons === 1, '有写入按钮的页数=' + writeButtons);
 
   // --- 还原：命令里要看得到它打算还原哪一份会话 ---
   if (restoreCount > 0) {

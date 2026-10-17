@@ -392,7 +392,19 @@ function Test-LLMKitInstallation {
                         -Actions @('用 -IncludeTools 让工具阶段帮你装')))
             continue
         }
-        if ($exeSource -eq '注册表卸载项') {
+        # GUI 判定只认配置，不认「从哪儿找到的可执行文件」。以前只有「注册表卸载项」那一条路算 GUI，
+        # 于是本工具自己装到 %LOCALAPPDATA%\Programs 的 cc-switch（kind=gui、pathEntries=[]、skipRun=true）
+        # 被当成命令行程序：先报「找不到命令」（它本来就不需要 PATH），再真的跑一次 cc-switch.exe --version —
+        # GUI 程序没有 stdout，于是判成「装上了但跑不起来」，复检结论变红、退出码 3。
+        # 用户在界面上看到的就是「我刚装好的东西验证失败」，其实一切正常。
+        $isGui = ([string](Get-ObjectProp -Object $tool -Name 'kind') -eq 'gui')
+        if (-not $isGui) {
+            foreach ($t in @(Get-ObjectProp -Object (Get-ObjectProp -Object $tool -Name 'install') -Name 'tiers')) {
+                $v = Get-ObjectProp -Object (Get-ObjectProp -Object $t -Name 'verify') -Name 'skipRun'
+                if ($true -eq $v) { $isGui = $true; break }
+            }
+        }
+        if ($isGui) {
             # 图形界面程序本来就不需要在 PATH 上（靠开始菜单快捷方式启动），
             # 报 warn 会让用户去处理一个根本不存在的问题。
             [void]$items.Add((New-VerifyItem -Id ('tool.' + $tool.id + '.path') -Category 'PATH' -Status 'info' `
@@ -409,7 +421,7 @@ function Test-LLMKitInstallation {
         #      （实测 cc-switch 返回了一整行等号，标题直接变成一串 ====）
         #   2) 它可能真的弹出窗口，把新手吓一跳
         # 能定位到文件本体，对 GUI 应用来说就是"装好了"。
-        $isGui = ($exeSource -eq '注册表卸载项')
+        # $isGui 已在上面按配置算好（见 PATH 分支之前）
         if ($isGui) {
             $guiActions = @()
             if ($installCount -gt 1) { $guiActions = @('检测到多份安装共存：加 -ResolveConflicts 处理') }
@@ -465,6 +477,30 @@ function Test-LLMKitInstallation {
         if ($t.kind -like 'json*') {
             try { $null = Read-TextFileUtf8 -Path $path | ConvertFrom-Json } catch { $parseOk = $false; $parseErr = Get-ShortErrorText -Text $_.Exception.Message }
         }
+        # 占位符标记：没给 key 时写进去的是「<在这里粘贴你的 API Key>」。
+        # 只看「字段齐全」会给出「已配置为目标渠道」的假绿灯 —— 它其实连不上。
+        $pending = @()
+        if ($t.kind -like 'json*') {
+            try {
+                $docObj = Read-TextFileUtf8 -Path $path | ConvertFrom-Json
+                $scope = $docObj
+                if ($t.objectPath) { $scope = Get-ObjectProp -Object $docObj -Name $t.objectPath }
+                if ($scope) {
+                    foreach ($e in @($t.entries)) {
+                        $nm = [string](Get-ObjectProp -Object $e -Name 'name')
+                        if (-not $nm) { continue }
+                        $val = [string](Get-ObjectProp -Object $scope -Name $nm)
+                        if ($val -match '^<.+>$') { $pending += $nm }
+                    }
+                }
+            } catch { }
+        }
+        if ($pending.Count -gt 0) {
+            [void]$items.Add((New-VerifyItem -Id ('cfg.' + $t.id + '.pending') -Category '配置' -Status 'warn' `
+                        -Title ($t.toolName + ' · ' + $t.label + '：还有 ' + $pending.Count + ' 个占位符没填') `
+                        -Detail ('待填：' + ($pending -join '、')) `
+                        -Actions @('其他变量都已经写好，你只需把占位符换成真实值', ('文件：' + $t.path))))
+        }
         if (-not $parseOk) {
             [void]$items.Add((New-VerifyItem -Id ('cfg.' + $t.id) -Category '配置' -Status 'fail' `
                         -Title ($t.toolName + ' · ' + $t.label + '：内容不是合法 JSON') -Detail $parseErr `
@@ -482,9 +518,12 @@ function Test-LLMKitInstallation {
                         -Title ($t.toolName + ' · ' + $t.label + '：无法比对') -Detail $calc.error))
             continue
         }
-        if (@($calc.changes).Count -eq 0) {
+        # 占位符没填时不能再报「已配置为目标渠道」：那是自相矛盾的绿灯（同一条下面还挂着 warn）。
+        if (@($calc.changes).Count -eq 0 -and $pending.Count -eq 0) {
             [void]$items.Add((New-VerifyItem -Id ('cfg.' + $t.id) -Category '配置' -Status 'ok' `
                         -Title ($t.toolName + ' · ' + $t.label + '：已配置为目标渠道') -Detail $t.path))
+        } elseif (@($calc.changes).Count -eq 0) {
+            # 字段都对、只是 key 还是占位符：上面那条 warn 已经说清楚了，这里不重复
         } else {
             $names = @($calc.changes | ForEach-Object { $_.name })
             [void]$items.Add((New-VerifyItem -Id ('cfg.' + $t.id) -Category '配置' -Status 'warn' `

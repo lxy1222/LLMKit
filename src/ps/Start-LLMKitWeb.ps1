@@ -153,8 +153,11 @@ if ($SelfTest) {
                 try { if ($_.Exception.Response) { $code = [int]$_.Exception.Response.StatusCode } } catch { }
                 $body = ''
                 $ct2 = ''
+                # PS 5.1 下 Invoke-WebRequest 抛的 WebException 里，Response 拿得到状态码，但响应流
+                # 已经被 cmdlet 自己读过一遍，再 ReadToEnd() 只会拿到空串 —— 真正的错误体在 ErrorDetails.Message 里。
+                try { if ($_.ErrorDetails -and $_.ErrorDetails.Message) { $body = [string]$_.ErrorDetails.Message } } catch { }
                 try {
-                    if ($_.Exception.Response) {
+                    if ($body -eq '' -and $_.Exception.Response) {
                         try { $ct2 = [string]$_.Exception.Response.ContentType } catch { }
                         $sr = New-Object System.IO.StreamReader($_.Exception.Response.GetResponseStream(), [System.Text.Encoding]::UTF8)
                         $body = $sr.ReadToEnd()
@@ -243,9 +246,11 @@ if ($SelfTest) {
                 return [pscustomobject]@{ ok = $true; status = [int]$r.StatusCode; text = [string]$r.Content }
             } catch {
                 $code = $null; $body = ''
+                # 同上：错误体只能从 ErrorDetails.Message 取（响应流已读完，ReadToEnd() 是空串）
+                try { if ($_.ErrorDetails -and $_.ErrorDetails.Message) { $body = [string]$_.ErrorDetails.Message } } catch { }
                 try { if ($_.Exception.Response) { $code = [int]$_.Exception.Response.StatusCode } } catch { }
                 try {
-                    if ($_.Exception.Response) {
+                    if ($body -eq '' -and $_.Exception.Response) {
                         $sr = New-Object System.IO.StreamReader($_.Exception.Response.GetResponseStream(), [System.Text.Encoding]::UTF8)
                         $body = $sr.ReadToEnd()
                     }
@@ -276,17 +281,34 @@ if ($SelfTest) {
         Check '非法 JSON 返回 400' ($pvBadJson.status -eq 400) ('实际 ' + $pvBadJson.status)
         # ---------------- W5：启动接口 ----------------
         # 全是 dryRun：只算要跑什么、不起进程 —— 自检不该在跑它的机器上弹窗口出来。
-        $lz = HttpPostJson '/api/launch' '{"toolId":"opencode","mode":"interactive","dryRun":true}'
-        $lzObj = $null
-        try { $lzObj = $lz.text | ConvertFrom-Json } catch { }
-        Check 'POST /api/launch(dryRun) 返回要跑的命令' ($lz.status -eq 200 -and $lzObj.ok -and $lzObj.commandLine) $lz.text
-        Check 'dryRun 明确了这是演练' ($lzObj -and $lzObj.dryRun -eq $true)
-        Check 'CLI 的启动命令用 cmd /k 开窗口' ($lzObj -and $lzObj.commandLine -match 'cmd\.exe /k') $lzObj.commandLine
+        # 但这几条断言成立的前提是"opencode 真的装着"：没装时 launch 本来就该返回 409，
+        # 硬断言"能算出启动命令"会让任何干净机器上的自检永远是红的 —— 那不是被测代码的问题。
+        # 所以按实际情况分两支，两支都是真断言：装了验命令，没装验 409 和可读原因。
+        $ocInstalled = $false
+        try {
+            $ocObj = (HttpGet '/api/tool/opencode').text | ConvertFrom-Json
+            if ($ocObj.PSObject.Properties.Name -contains 'installed') { $ocInstalled = [bool]$ocObj.installed }
+        } catch { }
+        if (-not $ocInstalled) {
+            $lzNo = HttpPostJson '/api/launch' '{"toolId":"opencode","mode":"interactive","dryRun":true}'
+            $lzNoObj = $null
+            try { $lzNoObj = $lzNo.text | ConvertFrom-Json } catch { }
+            Check 'opencode 没装时 launch 返回 409' ($lzNo.status -eq 409) ('实际 ' + $lzNo.status)
+            Check '409 的原因能读到（错误体没丢）' ($lzNoObj -and $lzNoObj.code -eq 'not-installed' -and $lzNoObj.error) $lzNo.text
+            Write-Line2 '  （opencode 没装，"能算出启动命令"那几条断言跳过）' 'DarkYellow'
+        } else {
+            $lz = HttpPostJson '/api/launch' '{"toolId":"opencode","mode":"interactive","dryRun":true}'
+            $lzObj = $null
+            try { $lzObj = $lz.text | ConvertFrom-Json } catch { }
+            Check 'POST /api/launch(dryRun) 返回要跑的命令' ($lz.status -eq 200 -and $lzObj.ok -and $lzObj.commandLine) $lz.text
+            Check 'dryRun 明确了这是演练' ($lzObj -and $lzObj.dryRun -eq $true)
+            Check 'CLI 的启动命令用 cmd /k 开窗口' ($lzObj -and $lzObj.commandLine -match 'cmd\.exe /k') $lzObj.commandLine
 
-        $lzSmoke = HttpPostJson '/api/launch' '{"toolId":"opencode","mode":"smoke","dryRun":true}'
-        $lzSmokeObj = $null
-        try { $lzSmokeObj = $lzSmoke.text | ConvertFrom-Json } catch { }
-        Check '冒烟模式返回配置里那条冒烟命令' ($lzSmoke.status -eq 200 -and $lzSmokeObj.commandLine -match 'opencode run') $lzSmoke.text
+            $lzSmoke = HttpPostJson '/api/launch' '{"toolId":"opencode","mode":"smoke","dryRun":true}'
+            $lzSmokeObj = $null
+            try { $lzSmokeObj = $lzSmoke.text | ConvertFrom-Json } catch { }
+            Check '冒烟模式返回配置里那条冒烟命令' ($lzSmoke.status -eq 200 -and $lzSmokeObj.commandLine -match 'opencode run') $lzSmoke.text
+        }
 
         $lzUnknown = HttpPostJson '/api/launch' '{"toolId":"no-such-tool","mode":"interactive","dryRun":true}'
         Check '未知工具启动被拒（400）' ($lzUnknown.status -eq 400) ('实际 ' + $lzUnknown.status)
