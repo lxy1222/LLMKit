@@ -860,7 +860,7 @@ function Get-LLMKitLaunchSpec {
     }
     if ([string]::IsNullOrEmpty($exe)) {
         $result.code = 'no-executable'
-        $result.reason = '已经装了，但没能解析出可执行文件 —— 试试重新体检，或者用安装层重装一次。'
+        $result.reason = '已经装了，但没能解析出可执行文件 —— 刷新一下状态，或者用安装层重装一次。'
         return [pscustomobject]$result
     }
     if (-not (Test-Path -LiteralPath $exe)) {

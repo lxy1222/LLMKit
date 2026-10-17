@@ -759,6 +759,8 @@ check('首页卡片的启动按钮与安装状态一致', apiCl2.installed || el
   check('预览明确会真的执行（apply=true）', pv1.apply === true, JSON.stringify(pv1));
   check('确认框弹出时还没执行', runCalls.length === 0);
   // 确认 → 真的发 /api/run
+  // 拦住 /api/run：只验请求体，不在服务端真的跑一次安装（计划现在能生成，会真装）
+  blockRun = true;
   el('modalOk').onclick();
   await wait('确认后真的发出 /api/run', () => runCalls.length > 0);
   check('确认后发出 /api/run', runCalls.length === 1);

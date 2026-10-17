@@ -923,14 +923,25 @@ function New-LLMKitToolPlan {
         try { $mirrorRewriters = @((Read-TextFileUtf8 -Path $depPath | ConvertFrom-Json).mirrorRewriters) } catch { $mirrorRewriters = @() }
     }
 
-    $report = $null
-    if (-not [string]::IsNullOrEmpty($ReportPath) -and (Test-Path -LiteralPath $ReportPath)) {
-        try { $report = Read-TextFileUtf8 -Path $ReportPath | ConvertFrom-Json } catch { $report = $null }
-    }
-    if (-not $report -or -not (Get-ObjectProp -Object $report -Name 'tools')) {
-        throw '工具安装计划需要先跑一次体检（报告里缺 tools 段）。请先执行 Check-Environment.ps1。'
-    }
-    $reportTools = Get-ObjectProp -Object $report -Name 'tools'
+      # 体检报告在这条链里只是"工具状态"的缓存。拿不到报告时**不能**要求用户"先去跑一次体检" ——
+      # 网页版早就没有那个按钮了（顶栏的刷新只是重扫页面）。所以：有报告就用（快），
+      # 没有就现场检测一次（准），两种都不打断安装。
+      $reportTools = $null
+      if ($report) { $reportTools = Get-ObjectProp -Object $report -Name 'tools' }
+      $liveState = $null
+      if (-not $reportTools) {
+          # 现场检测要和工具页用同一套口径，所以这里也把 npm 的 prefix 现问一次
+          $npmPrefix = ''
+          $npmExe = Resolve-ExecutablePath -Name 'npm'
+          if ($npmExe) {
+              $nr = Invoke-Process -FilePath $npmExe -Arguments @('prefix', '-g') -TimeoutMs 20000
+              if ($nr.stdout) {
+                  $pl = @($nr.stdout -split "`n" | Where-Object { $_.Trim() })
+                  if ($pl.Count -gt 0) { $npmPrefix = $pl[$pl.Count - 1].Trim() }
+              }
+          }
+          $liveState = [pscustomobject]@{ npmPrefix = [pscustomobject]@{ path = $npmPrefix } }
+      }
 
     # 残留扫描：范围与检测阶段保持一致
     $roots = New-Object System.Collections.ArrayList
@@ -959,7 +970,9 @@ function New-LLMKitToolPlan {
             continue
         }
 
-        $st = Get-ObjectProp -Object $reportTools -Name $tool.id
+          $st = $null
+          if ($reportTools) { $st = Get-ObjectProp -Object $reportTools -Name $tool.id }
+          if (-not $st) { $st = Get-ToolStatus -Tool $tool -State $liveState }
         $installed = [bool](Get-ObjectProp -Object $st -Name 'installed')
         $conflict = [bool](Get-ObjectProp -Object $st -Name 'conflict')
         $installCount = [int](Get-ObjectProp -Object $st -Name 'installCount')

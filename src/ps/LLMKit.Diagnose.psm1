@@ -166,7 +166,7 @@ function Get-ErrorInterpretation {
             explanation = '错误信息不在已知的规则表里。'
             actions = @(
                 '把完整原始报错连同诊断报告一起反馈，好把它补进规则表',
-                '先用体检确认网络与依赖这两块是否正常'
+                '先看上面「体检摘要」里网络与依赖这两块是否正常'
             )
             netKind = $NetKind
             httpStatus = $HttpStatus
