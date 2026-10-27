@@ -1043,5 +1043,143 @@
       "docsUrl": "https://git-scm.com/doc",
       "notes": "Claude Code 的部分功能依赖它。MinGit 安装层与镜像地址照搬自原来的依赖配置，未在本机验证下载链路。"
     }
+,    {
+      "id": "ollama",
+      "name": "Ollama",
+      "vendor": "Ollama",
+      "kind": "cli",
+      "role": "runtime",
+      "models": {
+        "writable": false,
+        "field": "不需要 key —— 模型跑在你自己机器上，接口是 http://127.0.0.1:11434/v1",
+        "alsoViaCcSwitch": false,
+        "note": "装了它才有「本地模型」那一页。模型文件从 3 GB 到 18 GB，下载前先看那一页的硬件判定。"
+      },
+      "guide": {
+        "steps": [
+          {
+            "section": "install",
+            "title": "装好运行时",
+            "check": "installed",
+            "hint": "它只负责把模型跑起来，本身不含模型。装完先别急着下模型 —— 去「本地模型」页看你的显卡能跑多大。"
+          },
+          {
+            "section": "configure",
+            "title": "把上下文调到 32K",
+            "check": "configured",
+            "hint": "默认上下文只有 4096，超了会静默截断（实测：9630 字符的输入只处理了 2050 个 token，不报任何错）。不调大就跑不了 agent。"
+          },
+          {
+            "section": "launch",
+            "title": "把服务跑起来",
+            "check": "launch",
+            "hint": "起来之后接口在 127.0.0.1:11434/v1，任何 OpenAI 兼容的工具都能连；本地没有 key 这回事。"
+          }
+        ]
+      },
+      "inApp": {
+        "name": "ollama",
+        "showValues": false,
+        "stepsLabel": "本地模型是这样用起来的：",
+        "docUrl": "https://ollama.com/download/windows",
+        "checkedAt": "2026-10-27",
+        "note": "这些都在你自己机器上做，本工具不代跑、也不写别的工具的配置。",
+        "steps": [
+          {
+            "do": "先看你的硬件判定，再决定下哪一档",
+            "hint": "点下面「打开本地模型页」；跑不动的那档直接告诉你为什么，别白下十几 GB"
+          },
+          {
+            "do": "拉一个模型",
+            "code": "ollama pull qwen3.5:9b",
+            "hint": "9B 约 6.6 GB、下载约 12 分钟（实测 9 MB/s）"
+          },
+          {
+            "do": "把它接到能直连的工具上",
+            "code": "baseURL = http://127.0.0.1:11434/v1",
+            "hint": "OpenCode / Codex / dsh 都能直接连；Claude Code 只说 Anthropic 协议，暂时连不了"
+          }
+        ]
+      },
+      "priority": 11,
+      "commands": [
+        "ollama"
+      ],
+      "probePaths": [
+        "%LOCALAPPDATA%\\Programs\\Ollama\\ollama.exe",
+        "%ProgramFiles%\\Ollama\\ollama.exe"
+      ],
+      "install": {
+        "preferred": "winget",
+        "tiers": [
+          {
+            "id": "winget",
+            "label": "winget 安装（官方安装器，装到当前用户）",
+            "detail": "winget install Ollama.Ollama。官方安装器默认装在 %LOCALAPPDATA%\\Programs\\Ollama，不需要管理员；装完托盘里会出现图标。",
+            "needsAdmin": false,
+            "type": "winget",
+            "packageId": "Ollama.Ollama",
+            "verify": {
+              "command": "ollama",
+              "args": [
+                "--version"
+              ],
+              "expectedPattern": "^ollama version"
+            },
+            "verified": false,
+            "sourceUrl": "https://ollama.com/download/windows"
+          },
+          {
+            "id": "manual",
+            "label": "打开 ollama.com 下载页（自己装）",
+            "detail": "本工具不替你静默运行第三方安装器。想换安装盘：装完把 OLLAMA_MODELS 指到别处即可 —— 本机实测就是改到了 E 盘。",
+            "type": "manual",
+            "manualUrl": "https://ollama.com/download/windows",
+            "guidance": {
+              "steps": [
+                "点上面的按钮打开 ollama.com 的 Windows 下载页",
+                "下载 OllamaSetup.exe，双击安装（默认装到当前用户，不需要管理员）",
+                "托盘出现 Ollama 图标就说明服务起来了，接口在 127.0.0.1:11434",
+                "回到这个页面点「验证可用性」"
+              ]
+            },
+            "needsAdmin": false,
+            "verified": false,
+            "sourceUrl": "https://ollama.com/download/windows"
+          }
+        ]
+      },
+      "verify": {
+        "versionCommand": "ollama --version",
+        "smokeTest": null,
+        "smokeTestNote": "只验证到 --version。真正的验证是「模型能不能返回结构化工具调用」，那要联网下模型，属于「本地模型」页的事，不放在这里。"
+      },
+      "configFiles": [
+        {
+          "path": "%USERPROFILE%\\.ollama",
+          "type": "dir",
+          "purpose": "模型与运行配置的默认位置。设了 OLLAMA_MODELS 就在别处（本机实测改到了 E 盘），所以磁盘余量要按 OLLAMA_MODELS 所在的盘算。本工具不写它。"
+        }
+      ],
+      "uninstall": {
+        "supported": false,
+        "reason": "它由官方安装器装到 %LOCALAPPDATA%\\Programs\\Ollama，请用「设置 → 应用 → 已安装的应用」卸载。模型文件在 OLLAMA_MODELS 指向的目录里，几 GB 到十几 GB，这一步本工具不替你决定。"
+      },
+      "launch": {
+        "args": [
+          "serve"
+        ],
+        "howTo": [
+          "点「启动」会开一个窗口跑 ollama serve；平时它已经在托盘里跑着，不需要再点。",
+          "接口固定在 127.0.0.1:11434/v1（OpenAI 兼容），本地没有 key。",
+          "想换端口或只监听本机：设 OLLAMA_HOST 环境变量再重启服务。",
+          "已装的模型用 ollama list 看；删掉用 ollama rm 名字 —— 那一步会真的删文件。"
+        ],
+        "uiHint": "「本地模型」那一页会读这个服务，显示已装模型和你的硬件判定。"
+      },
+      "homeUrl": "https://ollama.com/",
+      "docsUrl": "https://ollama.com/download/windows",
+      "notes": "本机实测（2026-10-27）：Ollama 0.32.4 + RTX 3080 10GB；qwen3.5:4b 127 tok/s、qwen3.5:9b 84.8 tok/s，两者都返回结构化工具调用。默认上下文 4096 会静默截断，必须显式调到 32K。"
+    }
   ]
 }

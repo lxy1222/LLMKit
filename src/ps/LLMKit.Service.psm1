@@ -968,8 +968,96 @@ function Get-LLMKitLaunchSpec {
     return [pscustomobject]$result
 }
 
+function Get-LLMKitLocalReport {
+    <#
+        本地模型页要的全部数据：硬件 → 每个模型的适配判定 → 运行时状态。
+
+        只读：不下载、不改配置、不启动任何东西。判定用的是纯函数
+        （Get-LLMKitModelVerdict），所以"这台机器能跑哪一档"是可单测的，
+        不依赖本机刚好装了什么。
+
+        特意把"读不到"和"不够"分开：内存读数拿不到时给 unknown，
+        绝不能当成 0 然后告诉用户"你跑不动" —— 那是冤枉。
+    #>
+    param([Parameter(Mandatory = $true)][string]$ConfigRoot)
+
+    $hardware = Get-LLMKitHardware
+    $catalog = @(Get-LLMKitModelCatalog -ConfigRoot $ConfigRoot)
+    $ollama = Get-LLMKitOllamaStatus
+    $installedNames = @($ollama.models | ForEach-Object { [string]$_.name })
+
+    $items = New-Object System.Collections.ArrayList
+    foreach ($m in $catalog) {
+        $v = Get-LLMKitModelVerdict -Hardware $hardware -Model $m
+        $tag = [string](Get-ObjectProp -Object $m -Name 'ollamaTag')
+        [void]$items.Add([pscustomobject]([ordered]@{
+                        id             = [string](Get-ObjectProp -Object $m -Name 'id')
+                        name           = [string](Get-ObjectProp -Object $m -Name 'name')
+                        vendor         = [string](Get-ObjectProp -Object $m -Name 'vendor')
+                        ollamaTag      = $tag
+                        params         = [string](Get-ObjectProp -Object $m -Name 'params')
+                        quant          = [string](Get-ObjectProp -Object $m -Name 'quant')
+                        sizeGB         = [double](Get-ObjectProp -Object $m -Name 'sizeGB')
+                        minVramGB      = [double](Get-ObjectProp -Object $m -Name 'minVramGB')
+                        minRamGB       = [double](Get-ObjectProp -Object $m -Name 'minRamGB')
+                        context        = [int](Get-ObjectProp -Object $m -Name 'context')
+                        tools          = [bool](Get-ObjectProp -Object $m -Name 'tools')
+                        license        = [string](Get-ObjectProp -Object $m -Name 'license')
+                        capability     = [string](Get-ObjectProp -Object $m -Name 'capability')
+                        capabilityNote = [string](Get-ObjectProp -Object $m -Name 'capabilityNote')
+                        sourceUrl      = [string](Get-ObjectProp -Object $m -Name 'sourceUrl')
+                        verdict        = [string]$v.verdict
+                        verdictReason  = [string]$v.reason
+                        downloaded     = ($installedNames -contains $tag)
+                    }))
+    }
+
+    $totalGB = 0
+    foreach ($mm in @($ollama.models)) { $totalGB += [double]$mm.sizeGB }
+
+    return [pscustomobject]([ordered]@{
+            schemaVersion = '0.1.0'
+            engine        = 'LLMKit.Service/' + $script:ServiceVersion
+            generatedAt   = (Get-Date).ToString('o')
+            contextHint   = 32768
+            hardware      = [pscustomobject]([ordered]@{
+                    gpus           = @($hardware.gpus | ForEach-Object {
+                            [pscustomobject]([ordered]@{
+                                    name       = [string]$_.name
+                                    vramGB     = [double]$_.vramGB
+                                    source     = [string]$_.source
+                                    suspicious = [bool]$_.suspicious
+                                })
+                        })
+                    maxVramGB      = [double]$hardware.maxVramGB
+                    vramSuspicious = [bool]$hardware.vramSuspicious
+                    ramGB          = [double]$hardware.ramGB
+                    ramSource      = [string]$hardware.ramSource
+                    cpuName        = [string]$hardware.cpuName
+                    cpuCores       = [int]$hardware.cpuCores
+                    modelRoot      = [string]$hardware.modelRoot
+                    diskFreeGB     = [double]$hardware.diskFreeGB
+                })
+            ollama        = [pscustomobject]([ordered]@{
+                    installed    = [bool]$ollama.installed
+                    version      = [string]$ollama.version
+                    running      = [bool]$ollama.running
+                    baseUrl      = [string]$ollama.baseUrl
+                    modelRoot    = [string]$ollama.modelRoot
+                    models       = @($ollama.models | ForEach-Object {
+                            [pscustomobject]([ordered]@{
+                                    name     = [string]$_.name
+                                    sizeGB   = [double]$_.sizeGB
+                                    modified = [string]$_.modified
+                                })
+                        })
+                    modelsTotalGB = [math]::Round($totalGB, 2)
+                })
+            models        = @($items)
+        })
+}
 Export-ModuleMember -Function `
     'Get-LLMKitServiceVersion', 'Assert-ServicePrerequisites', 'Resolve-ServiceConfigRoot', `
     'Get-LLMKitActionCatalog', 'Get-LLMKitAction', 'Get-LLMKitActionCommandLine', `
     'Get-LLMKitOverview', 'Get-LLMKitToolDetail', 'Get-LLMKitProviderList', 'Get-LLMKitSessionList', 'Get-LLMKitPackageStatus', `
-    'Get-LLMKitConfigOverview', 'Get-LLMKitDiagnosticReport', 'Get-LLMKitLaunchSpec', 'Get-LLMKitToolLaunchSummary'
+    'Get-LLMKitConfigOverview', 'Get-LLMKitDiagnosticReport', 'Get-LLMKitLaunchSpec', 'Get-LLMKitToolLaunchSummary', 'Get-LLMKitLocalReport'

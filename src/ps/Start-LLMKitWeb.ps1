@@ -40,7 +40,7 @@ if ([string]::IsNullOrEmpty($WebDir)) { $WebDir = Join-Path $ConfigRoot 'web' }
 if ([string]::IsNullOrEmpty($StateDir)) { $StateDir = Join-Path $ConfigRoot 'out\state' }
 
 # 模块导入顺序有依赖：引擎 → 服务层 → 界面工具 → Web
-foreach ($m in @('LLMKit', 'LLMKit.Install', 'LLMKit.Tools', 'LLMKit.Config', 'LLMKit.Diagnose', 'LLMKit.Engine', 'LLMKit.Service', 'LLMKit.Web')) {
+foreach ($m in @('LLMKit', 'LLMKit.Install', 'LLMKit.Tools', 'LLMKit.Config', 'LLMKit.Diagnose', 'LLMKit.Hardware', 'LLMKit.Engine', 'LLMKit.Service', 'LLMKit.Web')) {
     Import-Module (Join-Path $scriptDir ($m + '.psm1')) -Force -DisableNameChecking
 }
 Assert-WebPrerequisites
@@ -101,7 +101,7 @@ if ($SelfTest) {
     [void]$rs.AddScript({
             param($ScriptDir, $CfgRoot, $Web, $StDir, $P)
             $ErrorActionPreference = 'Stop'
-            foreach ($m in @('LLMKit', 'LLMKit.Install', 'LLMKit.Tools', 'LLMKit.Config', 'LLMKit.Diagnose', 'LLMKit.Engine', 'LLMKit.Service', 'LLMKit.Web')) {
+            foreach ($m in @('LLMKit', 'LLMKit.Install', 'LLMKit.Tools', 'LLMKit.Config', 'LLMKit.Diagnose', 'LLMKit.Hardware', 'LLMKit.Engine', 'LLMKit.Service', 'LLMKit.Web')) {
                 Import-Module (Join-Path $ScriptDir ($m + '.psm1')) -Force -DisableNameChecking
             }
             $srv = New-WebServer -ConfigRoot $CfgRoot -WebDir $Web -Port $P

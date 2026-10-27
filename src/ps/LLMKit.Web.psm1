@@ -201,6 +201,7 @@ function Resolve-WebRoute {
         if ($p -eq '/api/providers') { return [pscustomobject]@{ handler = 'api-providers'; file = ''; params = @{} } }
         if ($p -eq '/api/sessions') { return [pscustomobject]@{ handler = 'api-sessions'; file = ''; params = @{} } }
         if ($p -eq '/api/config') { return [pscustomobject]@{ handler = 'api-config'; file = ''; params = @{} } }
+        if ($p -eq '/api/local') { return [pscustomobject]@{ handler = 'api-local'; file = ''; params = @{} } }
         if ($p -eq '/api/diagnostic') { return [pscustomobject]@{ handler = 'api-diagnostic'; file = ''; params = @{} } }
         if ($p -eq '/api/health') { return [pscustomobject]@{ handler = 'api-health'; file = ''; params = @{} } }
         $mm = [regex]::Match($p, '^/api/tool/([A-Za-z0-9_\-]+)$')
@@ -404,7 +405,11 @@ function Invoke-WebRequestHandler {
             'api-config' {
                 return (New-JsonResponseBytes -Object (Get-LLMKitConfigOverview -ConfigRoot $cfgRoot))
             }
-            'api-diagnostic' {
+            'api-local' {
+                # 本地模型页：硬件判定 + 运行时状态。**只读** —— 不下载、不改配置、不启动进程。
+                # 判定在服务层用纯函数算（Get-LLMKitModelVerdict），界面只负责展示结论和原因。
+                return (New-JsonResponseBytes -Object (Get-LLMKitLocalReport -ConfigRoot $cfgRoot))
+            }            'api-diagnostic' {
                 # out 目录是 state 目录的上一级。诊断报告是给人看的、本来就已经脱敏，
                 # 读出来时服务层还会再脱敏一遍 —— 不建立在'它当初是干净的'这个假设上。
                 return (New-JsonResponseBytes -Object (Get-LLMKitDiagnosticReport -OutDir (Split-Path -Parent $stateDir)))

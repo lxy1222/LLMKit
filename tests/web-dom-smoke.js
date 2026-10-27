@@ -220,18 +220,19 @@ const runCalls = [];
   await wait('首页渲染', () => el('app').innerHTML.indexOf('OpenCode') >= 0);
   const home = el('app').innerHTML;
   console.log('首页');
-  check('渲染出十个工具', ['OpenCode', 'Claude Code', 'cc-switch', 'Codex', 'Gemini', 'DeepSeek', 'Python', 'PyCharm', 'Node.js', 'Git'].every(n => home.indexOf(n) >= 0));
+  check('渲染出十一个工具', ['OpenCode', 'Claude Code', 'cc-switch', 'Codex', 'Gemini', 'DeepSeek', 'Python', 'PyCharm', 'Node.js', 'Git', 'Ollama'].every(n => home.indexOf(n) >= 0));
   check('工具卡片链到它自己的页面', home.indexOf('#/tool/opencode') >= 0);
   // 分组：两个配套工具（cc-switch 管渠道、python 备环境）都不调模型，混在智能体网格里
   // 会让人以为它们也能拿来干活。分组标题与顺序都是这一条的产品判断，钉住它。
   const AGENT_HEAD = '智能体（你要用它们干活）';
   const MGR_HEAD = '配套工具（备环境、管渠道，不直接调模型）';
+  const LOCAL_HEAD = '本地模型运行时（把模型跑在你自己机器上）';
   check('首页把工具分成两组', home.indexOf(AGENT_HEAD) >= 0 && home.indexOf(MGR_HEAD) >= 0);
   check('配套工具那组排在智能体之后', home.indexOf(AGENT_HEAD) < home.indexOf(MGR_HEAD));
   const agentGroup = home.slice(home.indexOf(AGENT_HEAD), home.indexOf(MGR_HEAD));
   check('cc-switch 不在智能体那一组里', agentGroup.indexOf('cc-switch') < 0);
   check('python 不在智能体那一组里', agentGroup.indexOf('Python') < 0);
-  const compGroup = home.slice(home.indexOf(MGR_HEAD));
+  const compGroup = home.slice(home.indexOf(MGR_HEAD), home.indexOf(LOCAL_HEAD) >= 0 ? home.indexOf(LOCAL_HEAD) : undefined);
   check('配套工具组里有 python', compGroup.indexOf('Python') >= 0);
   check('配套工具组里有 PyCharm', compGroup.indexOf('PyCharm') >= 0);
   check('配套工具组里有 cc-switch', compGroup.indexOf('cc-switch') >= 0);
@@ -244,6 +245,10 @@ const runCalls = [];
   check('首页没有独立的「环境体检」入口', home.indexOf('环境体检') < 0);
   check('配套工具卡片说明了它管哪几个', home.indexOf('它管这几个用哪个渠道') >= 0);
   check('配套工具那组附了"不调模型"的说明', home.indexOf('这一组自己不调模型') >= 0);
+  // runtime（Ollama）必须单独一组：混进配套工具那组会让"这一组自己不调模型"当场说谎
+  check('首页有本地模型运行时这一组', home.indexOf(LOCAL_HEAD) >= 0);
+  check('运行时那组排在配套工具之后', home.indexOf(MGR_HEAD) < home.indexOf(LOCAL_HEAD));
+  check('Ollama 不在配套工具那一组里', compGroup.indexOf('Ollama') < 0);
   // 首页不显示"该做哪一步"的链条 —— 那条链挪到各智能体页（每个智能体不一样）。
   // 所以这里反过来断言首页**没有**它，防止以后又被顺手加回来。
   check('首页没有「下一步」引导条', home.indexOf('card nextstep') < 0 && home.indexOf('nextstep') < 0);
@@ -256,7 +261,7 @@ const runCalls = [];
     ccPos > 0 && ['claude-code', 'codex', 'opencode', 'gemini-cli', 'dsh']
       .every((t) => navHtml.indexOf('#/tool/' + t) > 0 && navHtml.indexOf('#/tool/' + t) < ccPos));
   const agentLinkCount = (navHtml.match(/#\/tool\//g) || []).length;
-  check('顶栏工具链接一共十个', agentLinkCount === 10, '实际 ' + agentLinkCount);
+  check('顶栏工具链接一共十一个', agentLinkCount === 11, '实际 ' + agentLinkCount);
   check('顶栏分隔线在 cc-switch 之前', navHtml.lastIndexOf('navsep', ccPos) >= 0 && navHtml.indexOf('navsep') < ccPos);
   // python 也是配套工具，分隔线之后、跟 cc-switch 一起
   const pyPos = navHtml.indexOf('#/tool/python');
@@ -662,6 +667,24 @@ check('步骤状态跟着安装状态走', cl.indexOf('该你了') >= 0 || cl.in
   // 而且后面 wait('启动确认框弹出') 等不到就抛异常、把整套冒烟带崩 —— 失败的就不再
   // 是"启动有没有问题"，而是"这台机器装没装"。改成先问接口，再按真实状态断言：
   // 装了验"能给可点的按钮并能拉起确认框"，没装验"为什么不给点"。
+  // --- 本地模型页：只读的硬件判定 ---
+  // 结论由服务端算好（纯函数），界面只负责展示。所以这里断的是
+  // "该说的说了没有、不该问的问了没有"，不是排版。
+  console.log('本地模型页');
+  setHash('#/local');
+  await wait('本地模型页渲染', () => el('app').innerHTML.indexOf('能跑哪一档') >= 0, 20000);
+  const localHtml = el('app').innerHTML;
+  check('本地模型页有「你的机器」一段', localHtml.indexOf('你的机器') >= 0);
+  check('本地模型页报显存与读数来源', localHtml.indexOf('显存') >= 0 && localHtml.indexOf('读数来源') >= 0);
+  check('本地模型页报磁盘余量', localHtml.indexOf('磁盘余量') >= 0);
+  check('本地模型页给出可复制的拉取命令', /ollama pull /.test(localHtml));
+  check('本地模型页给出判定（能跑 / 跑不动 / 说不准）',
+    localHtml.indexOf('能跑') >= 0 || localHtml.indexOf('跑不动') >= 0 || localHtml.indexOf('说不准') >= 0);
+  check('本地模型页写出「上下文必须调到 32K」', localHtml.indexOf('静默截断') >= 0);
+  check('本地模型页说清本地没有 key', localHtml.indexOf('本地没有 key') >= 0);
+  check('本地模型页没有 key / 写入入口', !reg.has('cfgEnv-ollama') && !reg.has('cfgWrite-ollama'));
+  check('本地模型页标注 Claude Code 连不了本地', localHtml.indexOf('Claude Code 暂时连不了本地') >= 0);
+  check('顶栏有「本地模型」入口', el('nav').innerHTML.indexOf('#/local') >= 0);
   console.log('启动区');
   setHash('#/tool/opencode');
   await wait('opencode 工具页（启动）', () => el('app').innerHTML.indexOf('怎么启动、怎么用') >= 0);

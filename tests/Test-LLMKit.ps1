@@ -29,6 +29,7 @@ Import-Module (Join-Path $ModuleRoot 'LLMKit.Tools.psm1') -Force -DisableNameChe
 Import-Module (Join-Path $ModuleRoot 'LLMKit.Config.psm1') -Force -DisableNameChecking
 Import-Module (Join-Path $ModuleRoot 'LLMKit.Diagnose.psm1') -Force -DisableNameChecking
 Import-Module (Join-Path $ModuleRoot 'LLMKit.Engine.psm1') -Force -DisableNameChecking
+Import-Module (Join-Path $ModuleRoot 'LLMKit.Hardware.psm1') -Force -DisableNameChecking
 Import-Module (Join-Path $ModuleRoot 'LLMKit.Service.psm1') -Force -DisableNameChecking
 
 $script:Pass = 0
@@ -536,10 +537,10 @@ Write-Host '工具目录的角色分组（智能体 vs 配套工具）' -Foregro
 # 所以钉在这里，而不是靠肉眼看界面。
 $catalog = Get-ToolCatalog -ConfigRoot $projectRoot
 $allTools = @($catalog.tools.tools)
-Assert-Equal 10 $allTools.Count '目录里是十个工具'
+Assert-Equal 11 $allTools.Count '目录里是十一个工具'
 
 $roles = @($allTools | ForEach-Object { [string](Get-ObjectProp -Object $_ -Name 'role') })
-$badRoles = @($roles | Where-Object { @('agent', 'provider-manager', 'companion') -notcontains $_ })
+$badRoles = @($roles | Where-Object { @('agent', 'provider-manager', 'companion', 'runtime') -notcontains $_ })
 Assert-Equal 0 $badRoles.Count ('role 只用白名单里的值（越界：' + ($badRoles -join '、') + '）')
 $agents = @($allTools | Where-Object { [string](Get-ObjectProp -Object $_ -Name 'role') -eq 'agent' })
 Assert-Equal 5 $agents.Count '五个智能体'
@@ -553,6 +554,9 @@ Assert-True ($compIds -contains 'python') '备环境的配套工具里有 python
 Assert-True ($compIds -contains 'node') '备环境的配套工具里有 node'
 Assert-True ($compIds -contains 'git') '备环境的配套工具里有 git'
 Assert-True ($compIds -contains 'pycharm') '备环境的配套工具里有 pycharm'
+$runtimeList = @($allTools | Where-Object { [string](Get-ObjectProp -Object $_ -Name 'role') -eq 'runtime' })
+Assert-Equal 1 $runtimeList.Count '一个本地模型运行时'
+Assert-Equal 'ollama' ([string](Get-ObjectProp -Object $runtimeList[0] -Name 'id')) '本地模型运行时就是 ollama'
 
 # python 的常用库清单：只检测、不安装，所以每条都必须有 name 与 why
 # Node 的版本下限：低于 v18 时 Codex / OpenCode / Gemini CLI / dsh 都可能装不上
@@ -578,7 +582,7 @@ Assert-True ($pyCmds -notcontains 'py') 'py 不在 commands 里（它是启动�
 Assert-True ($pyOnly -contains 'py') 'py 登记在 detectOnlyCommands 里'
 
 $maxAgentPrio = (@($agents | ForEach-Object { [int](Get-ObjectProp -Object $_ -Name 'priority') }) | Measure-Object -Maximum).Maximum
-foreach ($c in @($mgrList + $compList)) {
+foreach ($c in @($mgrList + $compList + $runtimeList)) {
     Assert-True ([int](Get-ObjectProp -Object $c -Name 'priority') -gt $maxAgentPrio) ('配套工具的优先级排在所有智能体之后：' + [string](Get-ObjectProp -Object $c -Name 'id'))
 }
 $prio = @($allTools | ForEach-Object { [int](Get-ObjectProp -Object $_ -Name 'priority') })
@@ -702,6 +706,74 @@ Assert-Equal 'm-two' (Resolve-ConfigValue -Template '{selectedModel}' -Provider 
 Assert-Equal 'my-own' (Resolve-ConfigValue -Template '{selectedModel}' -Provider $fprov2 -SelectedModel 'my-own') '不在清单里的名字也原样写入（不偷偷换掉）'
 Assert-Equal '' (Resolve-ConfigValue -Template '{selectedModel}' -Provider ([pscustomobject]@{ models = @() })) '渠道没登记模型时返回空，不瞎猜'
 Assert-Equal 'prefix-m-two-suffix' (Resolve-ConfigValue -Template 'prefix-{selectedModel}-suffix' -Provider $fprov2 -SelectedModel 'm-two') '模板里嵌在中间也认'
+# ======================================================================
+Write-Host ''
+Write-Host '本地模型：硬件判定与模型目录' -ForegroundColor Cyan
+# ======================================================================
+# 判定是纯函数，所以这里可以拿"假硬件"把边界钉死 —— 这比在真机上碰运气可靠：
+#   · 显存 23.9 vs 24 这种一位小数之差不能判错
+#   · AdapterRAM 被截到 4095 MB 的老坑必须标成"可疑"，不能当真值
+#   · 内存读不到时要给 unknown，不能因为读到 0 就说"你跑不动"
+$mdl = [pscustomobject]@{ id = 'x'; sizeGB = 10.0; minVramGB = 24.0; minRamGB = 32.0 }
+
+$hwTight = [pscustomobject]@{ maxVramGB = 23.9; vramSuspicious = $false; ramGB = 64.0; diskFreeGB = 500.0; modelRoot = 'F:\m' }
+Assert-Equal 'slow' (Get-LLMKitModelVerdict -Hardware $hwTight -Model $mdl).verdict '显存 23.9 GB 不够 24 GB → 退到 CPU（slow），不能判成 ok'
+
+$hwEnough = [pscustomobject]@{ maxVramGB = 24.0; vramSuspicious = $false; ramGB = 32.0; diskFreeGB = 500.0; modelRoot = 'F:\m' }
+Assert-Equal 'ok' (Get-LLMKitModelVerdict -Hardware $hwEnough -Model $mdl).verdict '显存正好 24 GB → ok（够就是够）'
+
+$hwLow = [pscustomobject]@{ maxVramGB = 8.0; vramSuspicious = $false; ramGB = 16.0; diskFreeGB = 500.0; modelRoot = 'F:\m' }
+Assert-Equal 'no' (Get-LLMKitModelVerdict -Hardware $hwLow -Model $mdl).verdict '显存 8 GB / 内存 16 GB 都不够 → no'
+
+$hwUnknownRam = [pscustomobject]@{ maxVramGB = 8.0; vramSuspicious = $false; ramGB = 0.0; diskFreeGB = 500.0; modelRoot = 'F:\m' }
+Assert-Equal 'unknown' (Get-LLMKitModelVerdict -Hardware $hwUnknownRam -Model $mdl).verdict '内存读不到 → unknown（不能说"你跑不动"）'
+
+$hwNoDisk = [pscustomobject]@{ maxVramGB = 80.0; vramSuspicious = $false; ramGB = 128.0; diskFreeGB = 5.0; modelRoot = 'F:\m' }
+Assert-Equal 'no' (Get-LLMKitModelVerdict -Hardware $hwNoDisk -Model $mdl).verdict '磁盘剩 5 GB < 15 GB → no（显存再大也装不下）'
+
+$hwSus = [pscustomobject]@{ maxVramGB = 4.0; vramSuspicious = $true; ramGB = 64.0; diskFreeGB = 500.0; modelRoot = 'F:\m' }
+$susVerdict = Get-LLMKitModelVerdict -Hardware $hwSus -Model ([pscustomobject]@{ id = 'y'; sizeGB = 3.0; minVramGB = 4.0; minRamGB = 8.0 })
+Assert-Equal 'ok' $susVerdict.verdict '显存读数被截断（4 GB 上限）时照常判定'
+Assert-True ($susVerdict.reason -match '截断') '显存读数可疑时要在理由里说出来'
+
+# 模型目录本身：字段齐、体积/门槛为正数、能力档在白名单里
+$modelCatalog = @(Get-LLMKitModelCatalog -ConfigRoot $projectRoot)
+Assert-True ($modelCatalog.Count -ge 4) ('模型目录至少有 4 档（实际 ' + $modelCatalog.Count + '）')
+$capWhite = @('chat-only', 'agent-weak', 'agent-ok')
+foreach ($m in $modelCatalog) {
+    $mid = [string](Get-ObjectProp -Object $m -Name 'id')
+    Assert-True ($mid.Length -gt 0) '每个模型都有 id'
+    $tag = [string](Get-ObjectProp -Object $m -Name 'ollamaTag')
+    Assert-True ($tag.Length -gt 0) ($mid + ' 有 ollama tag')
+    Assert-True ((Get-ObjectProp -Object $m -Name 'ollamaTag') -match '^[a-z0-9\.\-]+:[a-z0-9\.\-]+') ($mid + ' 的 tag 形如 名字:尺寸')
+    Assert-True ([double](Get-ObjectProp -Object $m -Name 'sizeGB') -gt 0) ($mid + ' 的 sizeGB 为正')
+    Assert-True ([double](Get-ObjectProp -Object $m -Name 'minVramGB') -gt 0) ($mid + ' 的 minVramGB 为正')
+    Assert-True ([int](Get-ObjectProp -Object $m -Name 'context') -ge 8192) ($mid + ' 的上下文至少 8K')
+    Assert-True ($capWhite -contains [string](Get-ObjectProp -Object $m -Name 'capability')) ($mid + ' 的能力档在白名单里')
+    Assert-True ([string](Get-ObjectProp -Object $m -Name 'sourceUrl')).StartsWith('https://') ($mid + ' 有来源链接')
+    Assert-True ([bool](Get-ObjectProp -Object $m -Name 'tools')) ($mid + ' 标注了会工具调用')
+}
+# 实测数据必须标日期：没有日期的跑分等于不可追溯，以后没人知道它是什么时候测的
+$measured = @($modelCatalog | Where-Object { $null -ne (Get-ObjectProp -Object $_ -Name 'measured') })
+Assert-True ($measured.Count -ge 3) ('至少 3 档带真机实测（实际 ' + $measured.Count + '）')
+foreach ($m in $measured) {
+    $ms = Get-ObjectProp -Object $m -Name 'measured'
+    Assert-True ([string](Get-ObjectProp -Object $ms -Name 'at')).Length -ge 8 ('实测记录带日期：' + [string](Get-ObjectProp -Object $m -Name 'id'))
+    Assert-True ([double](Get-ObjectProp -Object $ms -Name 'tokPerSec') -gt 0) ('实测记录带速度：' + [string](Get-ObjectProp -Object $m -Name 'id'))
+}
+
+# 运行时工具卡：它不写别的工具的配置，也不需要 key
+$ollamaTool = @($allTools | Where-Object { [string](Get-ObjectProp -Object $_ -Name 'id') -eq 'ollama' })[0]
+Assert-True ($null -ne $ollamaTool) '目录里有 ollama'
+$olModels = Get-ObjectProp -Object $ollamaTool -Name 'models'
+Assert-True (-not [bool](Get-ObjectProp -Object $olModels -Name 'writable')) 'ollama 不写模型配置'
+Assert-True (-not [bool](Get-ObjectProp -Object $olModels -Name 'alsoViaCcSwitch')) 'ollama 不走 cc-switch 管渠道（本地没有 key 可管）'
+$olLaunch = Get-ObjectProp -Object $ollamaTool -Name 'launch'
+Assert-True (@(Get-ObjectProp -Object $olLaunch -Name 'howTo').Count -ge 2) 'ollama 的 howTo 至少两步'
+$olSteps = @(Get-ObjectProp -Object (Get-ObjectProp -Object $ollamaTool -Name 'guide') -Name 'steps')
+$olSections = @($olSteps | ForEach-Object { [string](Get-ObjectProp -Object $_ -Name 'section') })
+Assert-True ($olSections -contains 'install') 'ollama 的分段里有安装'
+Assert-True ($olSections -contains 'launch') 'ollama 的分段里有启动'
 Write-Host ('-' * 60) -ForegroundColor DarkGray
 if ($script:Fail -eq 0) {
     Write-Host ('全部通过：' + $script:Pass + ' 项') -ForegroundColor Green

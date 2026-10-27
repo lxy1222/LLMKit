@@ -60,9 +60,9 @@ $required = @(
     'src\ps\Setup-LLMKit.ps1', 'src\ps\LLMKit.Engine.psm1',
     'src\ps\LLMKit.psm1', 'src\ps\LLMKit.Install.psm1', 'src\ps\LLMKit.Tools.psm1',
     'src\ps\LLMKit.Config.psm1', 'src\ps\LLMKit.Diagnose.psm1',
-    'src\ps\LLMKit.Service.psm1', 'src\ps\LLMKit.Web.psm1',
+    'src\ps\LLMKit.Service.psm1', 'src\ps\LLMKit.Web.psm1', 'src\ps\LLMKit.Hardware.psm1',
     'src\ps\Start-LLMKitWeb.ps1', 'web\index.html',
-    'config\tools.json', 'config\dependencies.json', 'config\providers.json', 'config\errormap.json'
+    'config\tools.json', 'config\dependencies.json', 'config\providers.json', 'config\errormap.json', 'config\models.json'
 )
 $missing = @($required | Where-Object { -not (Test-Path -LiteralPath (Join-Path $projectRoot $_)) })
 if ($missing.Count -gt 0) {
@@ -76,7 +76,7 @@ Say ('前置检查：' + $required.Count + ' 个必需文件齐全') 'Green'
 $payloadMustHave = @(
     'web/index.html', 'web/assets/app.js', 'web/assets/app.css',
     'src/ps/Start-LLMKitWeb.ps1', 'src/ps/LLMKit.Web.psm1',
-    'src/ps/LLMKit.Service.psm1', 'src/ps/LLMKit.Engine.psm1', 'config/tools.json'
+    'src/ps/LLMKit.Service.psm1', 'src/ps/LLMKit.Engine.psm1', 'src/ps/LLMKit.Hardware.psm1', 'config/tools.json', 'config/models.json'
 )
 
 # ---------------------------------------------------------------- 选路

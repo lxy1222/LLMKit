@@ -348,13 +348,18 @@
         '</div></div>';
     }
 
-    // 智能体在前、配套工具在后。配套工具这一类现在有两种：
+    // 智能体在前、配套工具在后，最后是本地模型运行时。
+    // 配套工具这一类现在有两种：
     //   provider-manager —— 帮你管渠道（cc-switch）
     //   companion        —— 帮你备环境（python 这类编程运行时）
     // 运行环境里的 Node / Git 也一起并到这一组：它们本来就是"配套"的东西，
     // 单独占一整节反而让首页多一层。
+    //
+    // runtime（Ollama）必须单独一组：它既不是智能体、也不是"不调模型"的配套工具，
+    // 混进配套工具那组会让那句"这一组自己不调模型"当场说谎。
     var agents = all.filter(function (t) { return t.role === 'agent'; }).map(toolCard).join('');
-    var companions = all.filter(function (t) { return t.role !== 'agent'; }).map(toolCard).join('');
+    var companions = all.filter(function (t) { return t.role === 'provider-manager' || t.role === 'companion'; }).map(toolCard).join('');
+    var runtimes = all.filter(function (t) { return t.role === 'runtime'; }).map(toolCard).join('');
 
     // 刷新按钮固定在顶栏（见 index.html），这里不再生成一个同 id 的按钮
     $('app').innerHTML =
@@ -373,6 +378,11 @@
       '<div class="acts" style="margin-top:10px">' +
       '<span class="note">每个配套工具都在它自己的页面里单独安装 —— 不再有"一起补齐"。</span>' +
       '</div></section>' +
+
+      (runtimes ?
+        '<section><h2>本地模型运行时（把模型跑在你自己机器上）</h2><div class="grid">' + runtimes + '</div>' +
+        '<div class="callout">这一组的工具不联网、不花 token 费，代价是占磁盘、吃显存，能力也不如在线 API。' +
+        '装好之后去 <a href="#/local">本地模型</a> 看你的机器能跑多大 —— 跑不动的那档会直接告诉你为什么。</div></section>' : '') +
 
       '<section><details><summary>关于这个工具</summary><p class="note">' +
       '只装到用户目录，不需要管理员权限，也不会删除你的文件 —— 所有改动都先挪到备份区并留日志，可以一键还原。<br>' +
@@ -1410,8 +1420,126 @@
     if (h === '' || h === '/') { return { page: 'home', q: q }; }
     var m = /^\/tool\/([A-Za-z0-9_\-]+)$/.exec(h);
     if (m) { return { page: 'tool', id: m[1], q: q }; }
-    if (/^\/(providers|config|diagnose|history)$/.test(h)) { return { page: h.slice(1), q: q }; }
+    if (/^\/(providers|config|diagnose|history|local)$/.test(h)) { return { page: h.slice(1), q: q }; }
     return { page: 'notfound', raw: h, q: q };
+  }
+
+  // ---------------------------------------------------------------- 本地模型页
+  // 只读页：硬件判定 + 运行时状态 + 模型档位。
+  // 所有结论都由服务层的纯函数算出（含"为什么跑不动"），界面只负责展示 ——
+  // 界面自己判一遍就等于有两套判定逻辑，迟早对不上。
+  function localVerdictPill(v) {
+    if (v === 'ok') { return pill('能跑', 'ok'); }
+    if (v === 'slow') { return pill('能跑但慢', 'warn'); }
+    if (v === 'no') { return pill('跑不动', 'fail'); }
+    return pill('说不准', 'warn');
+  }
+
+  // Ollama 的 modified_at 是完整 ISO（带毫秒与时区）。新手不需要看这些，只留到分钟。
+  function shortTime(s) {
+    var t = String(s || '');
+    if (!t) { return ''; }
+    return t.replace('T', ' ').slice(0, 16);
+  }
+
+  function localCapabilityText(c) {
+    if (c === 'agent-ok') { return '能跑智能体'; }
+    if (c === 'agent-weak') { return '简单 agent 任务'; }
+    return '问答 / 补全';
+  }
+
+  function renderLocal() {
+    $('app').innerHTML = '<div class="card">读取硬件与模型状态中…</div>';
+    getJson('/api/local').then(function (res) {
+      if (res.status !== 200) {
+        $('app').innerHTML = '<div class="card"><h3>读不到本地模型状态</h3><div class="meta">' +
+          esc((res.body && res.body.error) || ('HTTP ' + res.status)) + '</div>' +
+          '<div class="acts"><a href="#/">回首页</a></div></div>';
+        return;
+      }
+      var d = res.body;
+      S.local = d;
+      var hw = d.hardware || {};
+      var ol = d.ollama || {};
+
+      var gpuRows = (hw.gpus || []).map(function (g) {
+        var extra = g.suspicious ? pill('读数可能被截断', 'warn') : '';
+        return '<tr><td>' + esc(g.name) + ' ' + extra + '</td><td>' + esc(String(g.vramGB)) + ' GB</td><td>' +
+          mono(g.source) + '</td></tr>';
+      }).join('');
+      if (!gpuRows) { gpuRows = '<tr><td>没有检测到独立显卡</td><td>—</td><td>—</td></tr>'; }
+
+      var ramCell = hw.ramGB > 0
+        ? esc(String(hw.ramGB)) + ' GB'
+        : '<span class="note">读不到（不影响显存判定，但"能不能退到 CPU 跑"就说不准了）</span>';
+
+      var installedRows = (ol.models || []).map(function (m) {
+        return '<tr><td>' + mono(m.name) + '</td><td>' + esc(String(m.sizeGB)) + ' GB</td><td>' +
+          esc(shortTime(m.modified)) + '</td></tr>';
+      }).join('');
+
+      var modelCards = (d.models || []).map(function (m) {
+        return '<div class="card">' +
+          '<div class="acts" style="justify-content:space-between;align-items:center">' +
+          '<h3 style="margin:0">' + esc(m.name) + '</h3>' +
+          '<span>' + localVerdictPill(m.verdict) +
+          (m.downloaded ? pill('已下载', 'ok') : '') + '</span></div>' +
+          '<div class="meta">' + esc(m.params) + ' / ' + esc(m.quant) + ' / 下载 ' + esc(String(m.sizeGB)) + ' GB' +
+          ' / 需要显存 ' + esc(String(m.minVramGB)) + ' GB / 上下文 ' + esc(String(m.context)) +
+          ' / ' + esc(m.license) + ' / 能力：' + esc(localCapabilityText(m.capability)) + '</div>' +
+          '<div class="meta">模型名：' + mono(m.ollamaTag) + ' <button class="tiny" data-copy="ollama pull ' + esc(m.ollamaTag) + '">复制拉取命令</button></div>' +
+          '<div class="callout">' + esc(m.verdictReason) + '</div>' +
+          '<div class="meta">' + esc(m.capabilityNote || '') + '</div>' +
+          '</div>';
+      }).join('');
+
+      $('app').innerHTML =
+        '<section><h2>本地模型</h2>' +
+        '<div class="callout">本地模型跑在你自己机器上：<b>不花钱、数据不出本机、断网也能用</b>；代价是占磁盘、吃显存，能力也比在线 API 弱。' +
+        '本地没有 key 这回事 —— 这一页不问你要 key。</div>' +
+
+        '<h3>你的机器</h3>' +
+        '<table class="tbl"><thead><tr><th>显卡</th><th>显存</th><th>读数来源</th></tr></thead><tbody>' + gpuRows + '</tbody></table>' +
+        '<table class="tbl"><tbody>' +
+        '<tr><td>内存</td><td>' + ramCell + '</td></tr>' +
+        '<tr><td>磁盘余量</td><td>' + esc(String(hw.diskFreeGB)) + ' GB（按模型目录所在的盘算）</td></tr>' +
+        '<tr><td>模型目录</td><td>' + mono(maskUserPath(hw.modelRoot || '')) + '</td></tr>' +
+        '</tbody></table>' +
+
+        '<h3>运行时</h3>' +
+        (ol.installed
+          ? '<table class="tbl"><tbody>' +
+            '<tr><td>Ollama</td><td>' + esc(ol.version || '已安装（版本读不到）') +
+            (ol.running ? pill('服务在跑', 'ok') : pill('服务没在跑', 'warn')) + '</td></tr>' +
+            '<tr><td>接口</td><td>' + mono(ol.baseUrl || '') + '（OpenAI 兼容，本地无 key）</td></tr>' +
+            '<tr><td>已装模型</td><td>' + esc(String(ol.modelsTotalGB || 0)) + ' GB 合计</td></tr>' +
+            '</tbody></table>' +
+            (installedRows
+              ? '<table class="tbl"><thead><tr><th>模型</th><th>体积</th><th>下载时间</th></tr></thead><tbody>' + installedRows + '</tbody></table>'
+              : '<div class="meta">还没有下过模型。下面每一档都给了拉取命令，挑能跑的那档。</div>')
+          : '<div class="callout warn">还没装运行时。先装 Ollama：<a href="#/tool/ollama">Ollama 那一页</a>。' +
+            '装之前也能看下面的判定 —— 它会告诉你这台机器适合下多大的模型。</div>') +
+
+        '<div class="callout warn"><b>上下文必须显式调到 32K。</b>' +
+        'Ollama 默认只给 4096，超了会<b>静默截断</b>（实测：9630 字符的输入只处理了 2050 个 token，不报任何错）。' +
+        '本工具在各处都用 ' + esc(String(d.contextHint || 32768)) + '。</div>' +
+
+        '</section>' +
+
+        '<section><h2>能跑哪一档</h2>' +
+        '<div class="meta">判定按「显存 → 内存 → 磁盘」的顺序做：显存够就全量进显卡；显存不够但内存够会退到 CPU（慢）；都不够就是跑不动。' +
+        '磁盘按模型体积的 1.5 倍预检。</div>' +
+        modelCards +
+        '</section>' +
+
+        '<section><details><summary>本地模型的三个已知坑</summary><p class="note">' +
+        '<b>1. 工具调用不一定真会。</b>卡面上写着 tools 不代表它会返回结构化工具调用 —— 实测 deepseek-r1:7b 就不返回，' +
+        '只把调用当普通文本吐出来。所以模型目录里的"能力"是按实测标的。' +
+        '<br><b>2. 上下文默认只有 4K。</b>见上面那条，必须显式调大。' +
+        '<br><b>3. Claude Code 暂时连不了本地。</b>它只说 Anthropic 协议，本地这层是 OpenAI 协议，中间需要一个翻译代理；' +
+        '按约定这一版不做，页面上也不会给你假希望。' +
+        '</p></details></section>';
+    });
   }
 
   function renderNav(active) {
@@ -1429,7 +1557,7 @@
       });
     }
     items.push('<span class="navsep"></span>');
-    [['providers', '渠道'], ['diagnose', '诊断'], ['history', '历史']].forEach(function (p) {
+    [['local', '本地模型'], ['providers', '渠道'], ['diagnose', '诊断'], ['history', '历史']].forEach(function (p) {
       var on = (active === p[0]) ? ' class="on"' : '';
       items.push('<a href="#/' + p[0] + '"' + on + '>' + p[1] + '</a>');
     });
@@ -1469,6 +1597,9 @@
     } else if (r.page === 'history') {
       renderNav('history');
       renderHistory();
+    } else if (r.page === 'local') {
+      renderNav('local');
+      renderLocal();
     } else {
       renderNav('');
       renderNotFound(r.raw);
