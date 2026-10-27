@@ -100,6 +100,11 @@ function Get-LLMKitActionCatalog {
                 options = @('modelTag')
             })
         [pscustomobject]([ordered]@{
+                id = 'local-context'; label = '把上下文设成 32K'; scope = 'global'; destructive = $true
+                desc = '改 Ollama 的服务端默认上下文（默认只有 4096，超出会静默截断），会重启一次 Ollama 并验证真的生效'
+                options = @('contextLength')
+            })
+        [pscustomobject]([ordered]@{
                 id = 'local-endpoint-check'; label = '自检工具调用'; scope = 'global'; destructive = $false
                 desc = '只读：拿一个本地模型发一条带 tools 的请求，确认它真的返回结构化工具调用'
                 options = @('modelTag')
@@ -225,6 +230,9 @@ function Get-LLMKitActionCommandLine {
         'local-endpoint-check' {
             & $add '-CheckLocalEndpoint'
             if ($TargetId) { & $add '-LocalModelTag'; & $add $TargetId }
+        }
+        'local-context' {
+            & $add '-SetLocalContext'; & $add '32768'
         }
         'restore' {
             & $add '-Restore'; & $add $TargetId
@@ -1031,7 +1039,17 @@ function Get-LLMKitLocalReport {
     $hardware = Get-LLMKitHardware
     $catalog = @(Get-LLMKitModelCatalog -ConfigRoot $ConfigRoot)
     $ollama = Get-LLMKitOllamaStatus
+    $rootInfo = Get-LLMKitOllamaRootInfo
+    $ctx = Get-LLMKitOllamaContextSetting
     $installedNames = @($ollama.models | ForEach-Object { [string]$_.name })
+    # 每个模型的真实体积从清单算（ollama list/ps 的数字实测会差一个数量级）
+    $manifestSizes = @{}
+    $totalGB = 0
+    foreach ($mm in @($ollama.models)) {
+        $mi = Get-LLMKitOllamaManifestInfo -ModelRoot $rootInfo.modelRoot -Tag ([string]$mm.name)
+        $manifestSizes[[string]$mm.name] = [double]$mi.sizeGB
+        if ($mi.found) { $totalGB += [double]$mi.sizeGB } else { $totalGB += [double]$mm.sizeGB }
+    }
 
     $items = New-Object System.Collections.ArrayList
     foreach ($m in $catalog) {
@@ -1056,11 +1074,10 @@ function Get-LLMKitLocalReport {
                         verdict        = [string]$v.verdict
                         verdictReason  = [string]$v.reason
                         downloaded     = ($installedNames -contains $tag)
+                        manifestSizeGB = [double]$(if ($manifestSizes.ContainsKey($tag)) { $manifestSizes[$tag] } else { 0 })
                     }))
     }
 
-    $totalGB = 0
-    foreach ($mm in @($ollama.models)) { $totalGB += [double]$mm.sizeGB }
 
     return [pscustomobject]([ordered]@{
             schemaVersion = '0.1.0'
@@ -1099,6 +1116,13 @@ function Get-LLMKitLocalReport {
                                 })
                         })
                     modelsTotalGB = [math]::Round($totalGB, 2)
+                    installDir     = [string]$rootInfo.installDir
+                    exePath        = [string]$rootInfo.exePath
+                    rootSource     = [string]$rootInfo.modelRootSource
+                    isDefaultRoot  = [bool]$rootInfo.isDefaultRoot
+                    contextRequested = [int]$ctx.requested
+                    contextEffective = [int]$ctx.effective
+                    contextApplied   = [bool]$ctx.applied
                 })
             models        = @($items)
             # 接入矩阵：哪个智能体能直连本机端点、哪个不能、为什么

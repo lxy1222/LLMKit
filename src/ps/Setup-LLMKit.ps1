@@ -70,6 +70,7 @@ param(
     [string]$ModelPull = '',
     [string]$ModelRemove = '',
     [switch]$CheckLocalEndpoint,
+    [int]$SetLocalContext = 0,
     [string]$LocalModelTag = '',
     [string]$Uninstall,
     [switch]$RemoveUserConfig,
@@ -169,6 +170,23 @@ if (-not [string]::IsNullOrEmpty($ModelPull) -or -not [string]::IsNullOrEmpty($M
         Write-Line ('失败：' + $_.Exception.Message) 'Red'
         exit 1
     }
+}
+# ---------------------------------------------------------------- 本地上下文分支
+# 改 Ollama 的服务端默认上下文。默认 4096 且静默截断，agent 会半路失忆。
+if ($SetLocalContext -gt 0) {
+    Write-Line ''
+    Write-Line ('LLMKit · 把 Ollama 默认上下文设成 ' + $SetLocalContext) 'White'
+    Write-Line ('模式：' + $(if ($Apply) { '执行（-Apply，会重启一次 Ollama）' } else { '演练（DryRun，不改任何东西）' })) $(if ($Apply) { 'Yellow' } else { 'Green' })
+    Write-Line ('-' * 72) 'DarkGray'
+    $ctxNow = Get-LLMKitOllamaContextSetting
+    Write-Line ('  当前：环境变量 [' + $ctxNow.requestedRaw + ']，生效值 ' + $(if ($ctxNow.effective -gt 0) { $ctxNow.effective } else { '（没有模型在跑，读不到）' })) 'DarkGray'
+    Write-Line ('  目标：' + $SetLocalContext) 'DarkGray'
+    if (-not $Apply) { Write-Line ''; Write-Line '以上是演练结果。确认后加 -Apply 真正执行（会重启 Ollama）。' 'Yellow'; exit 0 }
+    $onLine2 = { param($s) Write-Line ('  ' + $s) 'DarkGray' }
+    $res = Set-LLMKitOllamaContext -Value $SetLocalContext -StateDir $StateDir -OnLine $onLine2
+    if ($res.ok) { Write-Line ('完成：' + $res.detail) 'Green'; exit 0 }
+    Write-Line ('失败：' + $res.detail) 'Red'
+    exit 1
 }
 # ---------------------------------------------------------------- 本地端点自检分支
 # 只读：发一条带 tools 的请求，确认这个模型真的会返回结构化工具调用。

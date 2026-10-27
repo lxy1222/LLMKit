@@ -428,7 +428,7 @@ foreach ($c in @(
 Write-Host '动作层（服务层）' -ForegroundColor Cyan
 # ======================================================================
 $actions = @(Get-LLMKitActionCatalog)
-Assert-True ($actions.Count -ge 11) ('动作清单至少 11 条（实际 ' + $actions.Count + '）')
+Assert-True ($actions.Count -ge 12) ('动作清单至少 12 条（实际 ' + $actions.Count + '）')
 Assert-Equal $actions.Count (@($actions | ForEach-Object { $_.id } | Sort-Object -Unique).Count) '动作 id 无重复'
 Assert-Equal 0 (@($actions | Where-Object { [string]::IsNullOrEmpty($_.label) -or [string]::IsNullOrEmpty($_.desc) -or [string]::IsNullOrEmpty($_.scope) }).Count) '每条动作都有 label / desc / scope'
 Assert-Equal 0 (@($actions | Where-Object { @('global', 'tool', 'session') -notcontains $_.scope }).Count) 'scope 取值合法'
@@ -911,6 +911,77 @@ $verdictWhite = @('ok', 'no-tool-calls', 'no-service', 'no-model', 'error')
 Assert-True ($verdictWhite -contains [string]$probe.verdict) ('自检结论在白名单里（实际：' + [string]$probe.verdict + '）')
 Assert-True ([string]$probe.detail).Length -gt 5 '自检给出了人能看懂的说明'
 Assert-Equal $false ([bool]$probe.ok -and [string]$probe.verdict -ne 'ok') 'ok 与结论必须一致'
+# ======================================================================
+Write-Host ''
+Write-Host '本地模型的位置标注与上下文设置' -ForegroundColor Cyan
+# ======================================================================
+# 位置：模型目录可能被 OLLAMA_MODELS 指到任何盘（本机就在 E 盘），界面必须标出来，
+# 否则用户看着"C 盘满了"根本不知道模型在哪。
+$rootInfo = Get-LLMKitOllamaRootInfo
+Assert-True ([string]$rootInfo.modelRoot).Length -gt 0 '拿得到模型目录'
+Assert-True (@('default', 'OLLAMA_MODELS') -contains [string]$rootInfo.modelRootSource) ('模型目录来源在白名单里（实际 ' + [string]$rootInfo.modelRootSource + '）')
+Assert-True ([bool]$rootInfo.isDefaultRoot -eq ([string]$rootInfo.modelRootSource -eq 'default')) 'isDefaultRoot 与来源一致'
+Assert-True ([string]$rootInfo.modelRootSource -eq 'OLLAMA_MODELS' -eq ([string]$rootInfo.modelRootEnv).Length -gt 0) '来源标为 OLLAMA_MODELS 时环境变量非空'
+
+# 清单体积：拿一个临时目录造一份假清单，验证"按分片求和"，而不是信 list 的数字
+# （实测过 ollama ps 对 gemma4:26b 报 1.3 GB，实际 17.33 GB）
+$tmpRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('llmkit-manifest-' + [guid]::NewGuid().ToString('N'))
+$blobDir = Join-Path $tmpRoot 'blobs'
+$manDir = Join-Path $tmpRoot 'manifests\registry.ollama.ai\library\fake'
+[void](New-Item -ItemType Directory -Path $blobDir -Force)
+[void](New-Item -ItemType Directory -Path $manDir -Force)
+$fakeManifest = [ordered]@{
+    schemaVersion = 2
+    layers = @(
+        @{ mediaType = 'application/vnd.ollama.image.model'; digest = 'sha256:aaaa' },
+        @{ mediaType = 'application/vnd.ollama.image.license'; digest = 'sha256:bbbb' }
+    )
+}
+[System.IO.File]::WriteAllText((Join-Path $manDir '3b'), ($fakeManifest | ConvertTo-Json -Depth 6), (New-Object System.Text.UTF8Encoding($false)))
+# 用 SetLength 造 1.5 GB + 0.6 GB 的稀疏分片（实测 6 ms，不用真写盘）
+foreach ($pair in @(@('sha256-aaaa', 1.5GB), @('sha256-bbbb', 0.6GB))) {
+    $fs = [System.IO.File]::Create((Join-Path $blobDir $pair[0]))
+    $fs.SetLength([long]$pair[1])
+    $fs.Close()
+}
+$mi = Get-LLMKitOllamaManifestInfo -ModelRoot $tmpRoot -Tag 'fake:3b'
+Assert-True ([bool]$mi.found) '能从清单里找到模型'
+Assert-Equal 2 ([int]$mi.layerCount) '清单里数到 2 个分片'
+Assert-True ([double]$mi.sizeGB -ge 2.0 -and [double]$mi.sizeGB -le 2.2) ('体积按分片求和（1.5+0.6 GB → 实际 ' + $mi.sizeGB + ' GB）')
+$mi2 = Get-LLMKitOllamaManifestInfo -ModelRoot $tmpRoot -Tag 'fake:9b'
+Assert-True (-not [bool]$mi2.found) '清单里没有的 tag 返回未找到（不抛异常）'
+Remove-Item -LiteralPath $tmpRoot -Recurse -Force -ErrorAction SilentlyContinue
+
+# 上下文：请求值/生效值/是否已应用 三件事都要给出来
+$ctxSet = Get-LLMKitOllamaContextSetting
+Assert-True ($null -ne $ctxSet) '拿得到上下文设置'
+Assert-True ([int]$ctxSet.requested -ge 0) '请求值是个整数'
+Assert-True ([int]$ctxSet.effective -ge 0) '生效值是个整数'
+Assert-True ($ctxSet.PSObject.Properties.Name -contains 'applied') '给出"是否已经应用"的结论'
+# applied 的判定规则：请求 ≥32K，且（没读到生效值 或 生效值也 ≥32K）
+$expectApplied = ([int]$ctxSet.requested -ge 32768) -and (([int]$ctxSet.effective -eq 0) -or ([int]$ctxSet.effective -ge 32768))
+Assert-Equal $expectApplied ([bool]$ctxSet.applied) 'applied 的判定与请求/生效值一致'
+
+# 本地报告要把位置、上下文、清单体积都透出来
+$rep = Get-LLMKitLocalReport -ConfigRoot $svcRoot
+foreach ($f in @('installDir', 'exePath', 'rootSource', 'isDefaultRoot', 'contextRequested', 'contextEffective', 'contextApplied')) {
+    Assert-True ($rep.ollama.PSObject.Properties.Name -contains $f) ('本地报告里有字段：' + $f)
+}
+$hasManifestField = $true
+foreach ($m in @($rep.models)) { if (-not ($m.PSObject.Properties.Name -contains 'manifestSizeGB')) { $hasManifestField = $false } }
+Assert-True $hasManifestField '每个模型档都带 manifestSizeGB'
+
+# 动作：把上下文设成 32K —— 会重启服务，必须 destructive + 只有 -Apply 才真跑
+$ctxAction = @($actions | Where-Object { $_.id -eq 'local-context' })
+Assert-Equal 1 $ctxAction.Count '清单里有「把上下文设成 32K」'
+Assert-True ([bool]$ctxAction[0].destructive) '改上下文被标为会改动系统（它确实会重启 Ollama）'
+Assert-True (@($ctxAction[0].options) -contains 'contextLength') '声明了 contextLength 选项'
+$ctxDry = Get-LLMKitActionCommandLine -ActionId 'local-context' -ConfigRoot $projectRoot
+Assert-True (-not (@($ctxDry.arguments) -contains '-Apply')) '演练模式不带 -Apply'
+Assert-True (@($ctxDry.arguments) -contains '-SetLocalContext') '命令里有 -SetLocalContext'
+Assert-True (@($ctxDry.arguments) -contains '32768') '命令里写了 32768'
+$ctxReal = Get-LLMKitActionCommandLine -ActionId 'local-context' -ConfigRoot $projectRoot -Apply
+Assert-True (@($ctxReal.arguments) -contains '-Apply') '执行模式才带 -Apply'
 Write-Host ('-' * 60) -ForegroundColor DarkGray
 if ($script:Fail -eq 0) {
     Write-Host ('全部通过：' + $script:Pass + ' 项') -ForegroundColor Green

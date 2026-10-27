@@ -735,6 +735,33 @@ check('步骤状态跟着安装状态走', cl.indexOf('该你了') >= 0 || cl.in
   } else {
     check('（本机没有已下载的模型，跳过删除确认断言）', true);
   }
+  // --- 位置与上下文：模型在哪、上下文实际多少，都必须标出来 ---
+  check('本地模型页标出 Ollama 安装位置', localHtml.indexOf('安装位置') >= 0);
+  check('本地模型页标出模型目录', localHtml.indexOf('模型目录') >= 0);
+  const rootPilled = localHtml.indexOf('被 OLLAMA_MODELS 改过') >= 0 || localHtml.indexOf('默认位置') >= 0;
+  check('模型目录注明了来源（默认位置 / 被 OLLAMA_MODELS 改过）', rootPilled);
+  check('已装模型表写的是「实占（按清单）」', localHtml.indexOf('实占（按清单）') >= 0);
+  check('本地模型页有「默认上下文」一行', localHtml.indexOf('默认上下文') >= 0);
+  const ctxApplied = !!(locJson.ollama && locJson.ollama.contextApplied);
+  const hasCtxBtn = /data-act="local-context"/.test(localHtml);
+  if (ctxApplied) {
+    check('上下文已经是 32K 时不显示「设成 32K」按钮', !hasCtxBtn);
+  } else {
+    check('上下文没到 32K 时给出「设成 32K」按钮', hasCtxBtn);
+    if (hasCtxBtn) {
+      previewCalls.length = 0; runCalls.length = 0;
+      clickDocBtn({ 'data-act': 'local-context' });
+      await wait('上下文确认框弹出', () => el('modal').classList.contains('show'), 20000);
+      const pvCtx = previewCalls[previewCalls.length - 1];
+      check('点「设成 32K」先向服务端要命令', !!pvCtx && pvCtx.actionId === 'local-context', JSON.stringify(pvCtx));
+      check('确认框里是 -SetLocalContext 那条命令', el('modalBody').innerHTML.indexOf('-SetLocalContext') >= 0);
+      check('确认框说明会重启 Ollama', el('modalBody').innerHTML.indexOf('重启') >= 0);
+      check('确认框说明验证不过会自动改回', el('modalBody').innerHTML.indexOf('改回原值') >= 0);
+      el('modalCancel').onclick();
+      await new Promise((r) => setTimeout(r, 150));
+      check('取消后没有改上下文', runCalls.length === 0);
+    }
+  }
   // --- 接入矩阵 + 工具调用自检 ---
   check('本地模型页有「接进各智能体」矩阵', localHtml.indexOf('接进各智能体') >= 0);
   check('矩阵里列出 Anthropic 协议的工具（Claude Code）', localHtml.indexOf('anthropic-messages') >= 0);

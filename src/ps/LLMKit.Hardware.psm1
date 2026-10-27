@@ -634,6 +634,240 @@ function Test-LLMKitLocalEndpoint {
         detail = ('它把工具调用当成了普通文本，没有返回 tool_calls。别拿这个模型跑智能体。它回的是：' + $text)
     }
 }
+function Get-LLMKitOllamaRootInfo {
+    <#
+        模型目录到底在哪、为什么在那。
+        用户的 OLLAMA_MODELS 可以指到任意盘（本机就指到了 E 盘），
+        界面必须把这个位置标出来 —— 否则用户看到 "C 盘满了" 根本不知道模型在 E 盘。
+    #>
+    $envValue = $env:OLLAMA_MODELS
+    if ([string]::IsNullOrWhiteSpace($envValue)) { $envValue = [Environment]::GetEnvironmentVariable('OLLAMA_MODELS', 'User') }
+    $source = 'default'
+    if (-not [string]::IsNullOrWhiteSpace($envValue)) { $source = 'OLLAMA_MODELS' }
+    $root = Get-LLMKitOllamaModelRoot
+    $exe = Resolve-LLMKitOllamaExe
+    $installDir = ''
+    if (-not [string]::IsNullOrWhiteSpace($exe)) { $installDir = Split-Path -Parent $exe }
+    return [pscustomobject]@{
+        modelRoot    = $root
+        modelRootEnv = [string]$envValue
+        modelRootSource = $source
+        isDefaultRoot = ($source -eq 'default')
+        installDir   = $installDir
+        exePath      = $exe
+    }
+}
+
+function Get-LLMKitOllamaManifestInfo {
+    <#
+        从清单读某个模型的真实体积与分片。
+        为什么不用 list / ps 的数字：实测 gemma4:26b 的 ollama ps 报 1.3 GB，
+        清单里实际 17.33 GB —— 差一个数量级，拿去算磁盘会让用户白等。
+    #>
+    param(
+        [Parameter(Mandatory = $true)][string]$ModelRoot,
+        [Parameter(Mandatory = $true)][string]$Tag
+    )
+
+    $result = [pscustomobject]@{ tag = $Tag; found = $false; sizeGB = 0; layerCount = 0; manifestPath = '' }
+    try {
+        $name = $Tag
+        $sizeTag = 'latest'
+        if ($Tag.Contains(':')) {
+            $idx = $Tag.LastIndexOf(':')
+            $name = $Tag.Substring(0, $idx)
+            $sizeTag = $Tag.Substring($idx + 1)
+        }
+        # ollama 的清单目录：manifests/<registry>/<namespace>/<name>/<tag>
+        $manifests = Join-Path $ModelRoot 'manifests'
+        if (-not (Test-Path -LiteralPath $manifests)) { return $result }
+        $hits = @(Get-ChildItem -LiteralPath $manifests -Recurse -File -Filter $sizeTag -ErrorAction SilentlyContinue |
+            Where-Object { $_.Directory.Name -eq $name })
+        if ($hits.Count -eq 0) { return $result }
+        $manifest = $hits[0]
+        $json = Get-Content -LiteralPath $manifest.FullName -Raw -Encoding UTF8 | ConvertFrom-Json
+        $blobDir = Join-Path $ModelRoot 'blobs'
+        $total = 0
+        $layers = 0
+        foreach ($layer in @($json.layers)) {
+            $digest = [string](Get-ObjectPropSafe $layer 'digest')
+            if ([string]::IsNullOrWhiteSpace($digest)) { continue }
+            $file = Join-Path $blobDir ('sha256-' + $digest.Replace('sha256:', ''))
+            if (Test-Path -LiteralPath $file) { $total += (Get-Item -LiteralPath $file).Length }
+            $layers++
+        }
+        return [pscustomobject]@{
+            tag          = $Tag
+            found        = $true
+            sizeGB       = [math]::Round($total / 1GB, 2)
+            layerCount   = $layers
+            manifestPath = $manifest.FullName
+        }
+    } catch {
+        return $result
+    }
+}
+
+function Get-LLMKitOllamaContextSetting {
+    <#
+        当前上下文设置：请求值（环境变量）+ 实际生效值（加载中的模型上读到的）。
+        两个都要报：设了但没重启时，环境变量是 32768、实际生效还是 4096 ——
+        只报一个就会让人以为已经好了。
+    #>
+    $requested = [Environment]::GetEnvironmentVariable('OLLAMA_CONTEXT_LENGTH', 'User')
+    if ([string]::IsNullOrWhiteSpace($requested)) { $requested = $env:OLLAMA_CONTEXT_LENGTH }
+    $requestedValue = 0
+    if (-not [string]::IsNullOrWhiteSpace($requested)) { [void][int]::TryParse([string]$requested, [ref]$requestedValue) }
+
+    $effective = 0
+    $running = $false
+    try {
+        $v = Invoke-RestMethod -Uri 'http://127.0.0.1:11434/api/version' -TimeoutSec 2 -ErrorAction Stop
+        $running = $true
+        $ps = Invoke-RestMethod -Uri 'http://127.0.0.1:11434/api/ps' -TimeoutSec 4 -ErrorAction Stop
+        foreach ($m in @($ps.models)) {
+            if ([int]$m.context_length -gt $effective) { $effective = [int]$m.context_length }
+        }
+    } catch { }
+
+    return [pscustomobject]@{
+        requested      = $requestedValue
+        requestedRaw   = [string]$requested
+        effective      = $effective
+        serverRunning  = $running
+        applied        = ($requestedValue -ge 32768 -and ($effective -eq 0 -or $effective -ge 32768))
+    }
+}
+
+function Restart-LLMKitOllama {
+    <#
+        重启 Ollama 并让新的环境变量生效。
+
+        为什么不用"杀掉服务等托盘拉起来"：托盘进程有它自己的环境（登录时那份），
+        它拉起的新服务继承的是旧环境 —— 实测杀掉服务后托盘重启，上下文仍然是 4096。
+        所以这里由我们自己带着变量启动（子进程继承我们的环境），优先拉托盘，
+        没有托盘就直接 serve。
+
+        返回：'tray' / 'serve' / ''（没起来）
+    #>
+    param([int]$TimeoutSec = 45)
+
+    Get-Process -ErrorAction SilentlyContinue | Where-Object { $_.ProcessName -like 'ollama*' } | ForEach-Object {
+        try { $_.Kill() } catch { }
+    }
+    Start-Sleep -Seconds 3
+
+    $tray = ''
+    $exe = Resolve-LLMKitOllamaExe
+    if ($exe) {
+        $candidate = Join-Path (Split-Path -Parent $exe) 'ollama app.exe'
+        if (Test-Path -LiteralPath $candidate) { $tray = $candidate }
+    }
+    $mode = ''
+    try {
+        if (-not [string]::IsNullOrWhiteSpace($tray)) {
+            Start-Process -FilePath $tray -WindowStyle Hidden | Out-Null
+            $mode = 'tray'
+        } elseif (-not [string]::IsNullOrWhiteSpace($exe)) {
+            Start-Process -FilePath $exe -ArgumentList 'serve' -WindowStyle Hidden | Out-Null
+            $mode = 'serve'
+        }
+    } catch { $mode = '' }
+
+    $deadline = (Get-Date).AddSeconds($TimeoutSec)
+    while ((Get-Date) -lt $deadline) {
+        try {
+            [void](Invoke-RestMethod -Uri 'http://127.0.0.1:11434/api/version' -TimeoutSec 2 -ErrorAction Stop)
+            return $mode
+        } catch { Start-Sleep -Milliseconds 800 }
+    }
+    return ''
+}
+
+function Set-LLMKitOllamaContext {
+    <#
+        把 Ollama 的默认上下文设到 32K 并**验证真的生效**。
+
+        为什么必须设这个：Ollama 默认只给 4096，超出部分**静默截断**（实测：9630 字符的
+        输入只处理了 2050 个 token，不报任何错）。agent 于是半路失忆，还查不出原因。
+        设 num_ctx 只能管我们自己发的请求 —— OpenCode / Codex / dsh 那些工具不会传，
+        所以必须改服务端默认值。
+
+        失败就回滚：旧值写回（或在原本没有时删掉），再重启一次，如实报失败。
+    #>
+    param(
+        [int]$Value = 32768,
+        [string]$StateDir = '',
+        [scriptblock]$OnLine
+    )
+
+    $emit = { param($s) if ($OnLine) { & $OnLine $s } }
+    $exe = Resolve-LLMKitOllamaExe
+    if ([string]::IsNullOrWhiteSpace($exe)) {
+        return [pscustomobject]@{ ok = $false; verdict = 'no-runtime'; detail = '没装 Ollama，先装运行时再设置上下文。'; previousValue = ''; mode = '' }
+    }
+
+    $before = Get-LLMKitOllamaContextSetting
+    $oldRaw = [Environment]::GetEnvironmentVariable('OLLAMA_CONTEXT_LENGTH', 'User')
+    & $emit ('原设置：环境变量 [' + $oldRaw + ']，实际生效 ' + $(if ($before.effective -gt 0) { $before.effective } else { '（没有模型在跑，读不到）' }))
+
+    try {
+        [Environment]::SetEnvironmentVariable('OLLAMA_CONTEXT_LENGTH', [string]$Value, 'User')
+    } catch {
+        return [pscustomobject]@{ ok = $false; verdict = 'set-failed'; detail = ('写用户环境变量失败：' + $_.Exception.Message); previousValue = $oldRaw; mode = '' }
+    }
+    # 同时设进当前进程，重启出来的子进程会继承
+    $env:OLLAMA_CONTEXT_LENGTH = [string]$Value
+
+    & $emit ('已把 OLLAMA_CONTEXT_LENGTH 设为 ' + $Value + '，正在重启 Ollama 让新值生效…')
+    $mode = Restart-LLMKitOllama
+    if ([string]::IsNullOrWhiteSpace($mode)) {
+        & $emit '重启后服务没起来，回滚环境变量'
+        try {
+            if ([string]::IsNullOrWhiteSpace($oldRaw)) { [Environment]::SetEnvironmentVariable('OLLAMA_CONTEXT_LENGTH', $null, 'User') }
+            else { [Environment]::SetEnvironmentVariable('OLLAMA_CONTEXT_LENGTH', $oldRaw, 'User') }
+        } catch { }
+        [void](Restart-LLMKitOllama)
+        return [pscustomobject]@{ ok = $false; verdict = 'restart-failed'; detail = '重启 Ollama 后服务没起来（30 秒内没响应）。已把环境变量改回原样，请手动启动 Ollama 看一眼。'; previousValue = $oldRaw; mode = '' }
+    }
+    & $emit ('服务已起来（' + $mode + '），现在验证实际生效值…')
+
+    # 验证：挑一个已装模型，故意不传 num_ctx，看服务端给多少
+    $status = Get-LLMKitOllamaStatus
+    $tag = ''
+    if (@($status.models).Count -gt 0) { $tag = [string]@($status.models)[0].name }
+    $effective = 0
+    if (-not [string]::IsNullOrWhiteSpace($tag)) {
+        try {
+            $bytes = [System.Text.Encoding]::UTF8.GetBytes((@{ model = $tag; prompt = 'hi'; stream = $false; options = @{ num_predict = 1 } } | ConvertTo-Json -Depth 6))
+            [void](Invoke-WebRequest -Uri 'http://127.0.0.1:11434/api/generate' -Method Post -Body $bytes -ContentType 'application/json; charset=utf-8' -UseBasicParsing -TimeoutSec 300)
+            $after = Get-LLMKitOllamaContextSetting
+            $effective = [int]$after.effective
+        } catch {
+            & $emit ('验证请求失败：' + $_.Exception.Message)
+        }
+    }
+
+    if ($effective -ge $Value) {
+        if (-not [string]::IsNullOrWhiteSpace($StateDir)) {
+            try {
+                if (-not (Test-Path -LiteralPath $StateDir)) { [void](New-Item -ItemType Directory -Path $StateDir -Force) }
+                Add-Content -LiteralPath (Join-Path $StateDir 'context-changes.log') -Encoding UTF8 `
+                    -Value ((Get-Date).ToString('yyyy-MM-dd HH:mm:ss') + '  OLLAMA_CONTEXT_LENGTH: [' + $oldRaw + '] → ' + $Value + '（用户级；验证生效 ' + $effective + '）')
+            } catch { }
+        }
+        & $emit ('生效确认：加载中的模型上下文 = ' + $effective)
+        return [pscustomobject]@{ ok = $true; verdict = 'ok'; detail = ('已设成 ' + $Value + '，实测生效值 ' + $effective + '（用模型 ' + $tag + ' 验证）。'); previousValue = $oldRaw; mode = $mode }
+    }
+
+    & $emit ('设了 ' + $Value + ' 但实测生效值是 ' + $effective + '，回滚')
+    try {
+        if ([string]::IsNullOrWhiteSpace($oldRaw)) { [Environment]::SetEnvironmentVariable('OLLAMA_CONTEXT_LENGTH', $null, 'User') }
+        else { [Environment]::SetEnvironmentVariable('OLLAMA_CONTEXT_LENGTH', $oldRaw, 'User') }
+    } catch { }
+    [void](Restart-LLMKitOllama)
+    return [pscustomobject]@{ ok = $false; verdict = 'not-applied'; detail = ('设成 ' + $Value + ' 之后实测仍是 ' + $effective + '，已回滚。多半是这个 Ollama 版本不认 OLLAMA_CONTEXT_LENGTH，或者还有另一个服务实例在跑。'); previousValue = $oldRaw; mode = $mode }
+}
 Export-ModuleMember -Function `
     'Get-LLMKitHardware', 'Get-LLMKitModelVerdict', 'Get-LLMKitModelCatalog', `
-    'Get-LLMKitOllamaStatus', 'Get-LLMKitOllamaModelRoot', 'Get-LLMKitDiskFreeGB', 'Get-LLMKitModelPullPlan', 'Invoke-LLMKitModelPull', 'Invoke-LLMKitModelRemove', 'Resolve-LLMKitOllamaExe', 'Test-LLMKitOllamaRunning', 'Get-LLMKitDiskGate', 'Test-LLMKitLocalEndpoint'
+    'Get-LLMKitOllamaStatus', 'Get-LLMKitOllamaModelRoot', 'Get-LLMKitDiskFreeGB', 'Get-LLMKitModelPullPlan', 'Invoke-LLMKitModelPull', 'Invoke-LLMKitModelRemove', 'Resolve-LLMKitOllamaExe', 'Test-LLMKitOllamaRunning', 'Get-LLMKitDiskGate', 'Test-LLMKitLocalEndpoint', 'Get-LLMKitOllamaRootInfo', 'Get-LLMKitOllamaManifestInfo', 'Get-LLMKitOllamaContextSetting', 'Set-LLMKitOllamaContext', 'Restart-LLMKitOllama'

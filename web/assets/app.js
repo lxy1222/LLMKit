@@ -60,6 +60,10 @@
       return '<li>这一步会真的往磁盘写文件（几 GB），磁盘余量服务端已经算过，不够会直接拒绝。</li>' +
         '<li>下载过程会实时输出进度；结束后会回查一次「已装列表」，不是只看命令有没有报成功。</li>';
     }
+    if (actionId === 'local-context') {
+      return '<li>会改用户级环境变量 <b>OLLAMA_CONTEXT_LENGTH=32768</b>，并<b>重启一次 Ollama</b>（正在跑的任务会被中断）。</li>' +
+        '<li>重启后会真的加载一个模型、读回生效值来验证；验证不过会<b>自动改回原值</b>并告诉你。</li>';
+    }
     if (actionId === 'model-remove') {
       return '<li>这一步会真的删掉模型文件，<b>不会</b>挪到备份区 —— 一个模型几 GB，搬备份很可能把磁盘撑爆。</li>' +
         '<li>删了什么、多大、怎么装回来，会记在 out\\state\\model-removals.log；要恢复就是重新下载。</li>';
@@ -1492,6 +1496,27 @@
     return '问答 / 补全';
   }
 
+  // 上下文这一行要同时说清"请求值"和"实测生效值"：
+  // 设了但没重启时，环境变量是 32768、实际还是 4096 —— 只说一个就是骗人。
+  function contextCell(ol) {
+    var req = Number(ol.contextRequested || 0);
+    var eff = Number(ol.contextEffective || 0);
+    var bits = '';
+    if (eff > 0) {
+      bits += (eff >= 32768 ? pill('生效 ' + eff, 'ok') : pill('只有 ' + eff, 'warn'));
+      bits += '<span class="meta">（加载中的模型实际拿到的）</span>';
+    } else {
+      bits += '<span class="meta">没有模型在跑，读不到生效值</span>';
+    }
+    if (req > 0) { bits += '<div class="meta">环境变量 OLLAMA_CONTEXT_LENGTH = ' + esc(String(req)) + '</div>'; }
+    if (!ol.contextApplied) {
+      bits += '<div class="acts" style="margin-top:6px"><button class="tiny" data-act="local-context">设成 32K</button>' +
+        '<span class="note">默认只给 4096，超了会静默截断；设完会重启一次 Ollama 并验证真的生效</span></div>';
+    } else {
+      bits += '<div class="meta">已经是 32K：智能体不传 num_ctx 也能拿到足够上下文。</div>';
+    }
+    return bits;
+  }
   function renderLocal() {
     $('app').innerHTML = '<div class="card">读取硬件与模型状态中…</div>';
     getJson('/api/local').then(function (res) {
@@ -1518,7 +1543,10 @@
         : '<span class="note">读不到（不影响显存判定，但"能不能退到 CPU 跑"就说不准了）</span>';
 
       var installedRows = (ol.models || []).map(function (m) {
-        return '<tr><td>' + mono(m.name) + '</td><td>' + esc(String(m.sizeGB)) + ' GB</td><td>' +
+        var real = 0;
+        (d.models || []).forEach(function (x) { if (x.ollamaTag === m.name) { real = x.manifestSizeGB; } });
+        var sizeCell = real > 0 ? (esc(String(real)) + ' GB') : (esc(String(m.sizeGB)) + ' GB<span class="note">（清单没读到，用 Ollama 报的数）</span>');
+        return '<tr><td>' + mono(m.name) + '</td><td>' + sizeCell + '</td><td>' +
           esc(shortTime(m.modified)) + '</td>' +
           '<td><button class="tiny" data-act="local-endpoint-check" data-target="' + esc(m.name) + '">自检工具调用</button></td></tr>';
       }).join('');
@@ -1583,11 +1611,16 @@
           ? '<table class="tbl"><tbody>' +
             '<tr><td>Ollama</td><td>' + esc(ol.version || '已安装（版本读不到）') +
             (ol.running ? pill('服务在跑', 'ok') : pill('服务没在跑', 'warn')) + '</td></tr>' +
+            '<tr><td>安装位置</td><td>' + mono(maskUserPath(ol.installDir || '')) + '</td></tr>' +
+            '<tr><td>模型目录</td><td>' + mono(maskUserPath(ol.modelRoot || '')) +
+            (ol.isDefaultRoot ? pill('默认位置', 'ok') : pill('被 OLLAMA_MODELS 改过', 'warn')) +
+            '<div class="meta">模型文件就在这个目录里；换盘就设 OLLAMA_MODELS。删模型请用下面的「删除」，别手动删目录。</div></td></tr>' +
             '<tr><td>接口</td><td>' + mono(ol.baseUrl || '') + '（OpenAI 兼容，本地无 key）</td></tr>' +
-            '<tr><td>已装模型</td><td>' + esc(String(ol.modelsTotalGB || 0)) + ' GB 合计</td></tr>' +
+            '<tr><td>默认上下文</td><td>' + contextCell(ol) + '</td></tr>' +
+            '<tr><td>已装模型</td><td>' + esc(String(ol.modelsTotalGB || 0)) + ' GB 合计（按清单算实占）</td></tr>' +
             '</tbody></table>' +
             (installedRows
-              ? '<table class="tbl"><thead><tr><th>模型</th><th>体积</th><th>下载时间</th><th>自检</th></tr></thead><tbody>' + installedRows + '</tbody></table>'
+              ? '<table class="tbl"><thead><tr><th>模型</th><th>实占（按清单）</th><th>下载时间</th><th>自检</th></tr></thead><tbody>' + installedRows + '</tbody></table>'
               : '<div class="meta">还没有下过模型。下面每一档都给了拉取命令，挑能跑的那档。</div>')
           : '<div class="callout warn">还没装运行时。先装 Ollama：<a href="#/tool/ollama">Ollama 那一页</a>。' +
             '装之前也能看下面的判定 —— 它会告诉你这台机器适合下多大的模型。</div>') +
