@@ -1110,6 +1110,35 @@
       esc(title) + pillHtml + '</h2>' + hint + body + '</section>';
   }
 
+  // 本地模型：这个工具能不能把端点指到本机。
+  // 能直连的只给片段与步骤（不代写 —— 这些配置是嵌套的，盲写会把用户已有渠道搞坏）；
+  // 不能直连的直接说清为什么，不给假希望。
+  function localEndpointSection(d) {
+    var e = d.localEndpoint;
+    if (!e) { return ''; }
+    if (!e.supported) {
+      return '<section><h2>本地模型</h2>' +
+        '<div class="callout warn">这个工具<b>暂时连不了本地模型</b>：' + esc(e.reason || '') + '</div>' +
+        (e.workaround ? '<div class="meta">' + esc(e.workaround) + '</div>' : '') +
+        (e.measured ? '<div class="meta">实测状态：' + esc(e.measured) + '</div>' : '') +
+        '<div class="meta">想用本地模型：去 <a href="#/local">本地模型</a> 页看你的机器能跑多大。</div></section>';
+    }
+    var steps = (e.steps || []).map(function (s) { return '<li>' + esc(s) + '</li>'; }).join('');
+    return '<section><h2>本地模型（可选）</h2>' +
+      '<div class="meta">端点：' + mono('http://127.0.0.1:11434/v1') + '（OpenAI 兼容，本地无 key）' +
+      (e.protocol ? ' · 协议：' + mono(e.protocol) : '') + '</div>' +
+      (steps ? '<ol>' + steps + '</ol>' : '') +
+      '<div class="meta">配置文件：' + mono(maskUserPath(e.configPath || '')) + '</div>' +
+      (e.snippet
+        ? '<div class="cmd"><pre style="margin:0;white-space:pre-wrap">' + esc(e.snippet) + '</pre></div>' +
+          '<div class="acts"><button class="tiny" data-copy="' + esc(e.snippet) + '">复制这段片段</button></div>'
+        : '') +
+      (e.apiKeyNote ? '<div class="meta">' + esc(e.apiKeyNote) + '</div>' : '') +
+      (e.caveat ? '<div class="callout">' + esc(e.caveat) + '</div>' : '') +
+      (e.measured ? '<div class="meta">实测状态：' + esc(e.measured) + '</div>' : '') +
+      '<div class="meta">接好之后回 <a href="#/local">本地模型</a> 页点一次「自检工具调用」—— 模型不会用工具的话，接上也白搭。</div>' +
+      '</section>';
+  }
   function renderTool(id) {
     var d = S.detail[id];
     if (!d) { $('app').innerHTML = '<div class="card">读取 ' + esc(id) + ' 的状态中…</div>'; return; }
@@ -1214,6 +1243,7 @@
           inApp: d.inApp
         });
       }).join('') +
+      localEndpointSection(d) +
       maintSection(d, id, { canUninstall: canUninstall, canArtifacts: canArtifacts });
 
     var ti = $('do-install');
@@ -1489,7 +1519,18 @@
 
       var installedRows = (ol.models || []).map(function (m) {
         return '<tr><td>' + mono(m.name) + '</td><td>' + esc(String(m.sizeGB)) + ' GB</td><td>' +
-          esc(shortTime(m.modified)) + '</td></tr>';
+          esc(shortTime(m.modified)) + '</td>' +
+          '<td><button class="tiny" data-act="local-endpoint-check" data-target="' + esc(m.name) + '">自检工具调用</button></td></tr>';
+      }).join('');
+      // 接入矩阵：能直连的给路径，不能直连的说原因 —— 别让用户以为"所有工具都能用本地"
+      var nameOf = {};
+      ((S.overview && S.overview.tools) || []).forEach(function (t) { nameOf[t.id] = t.name; });
+      var endpointRows = (d.endpoints || []).map(function (e) {
+        var yn = e.supported ? pill('能', 'ok') : pill('不能', 'fail');
+        var how = e.supported
+          ? ('改 ' + mono(maskUserPath(e.configPath || '它自己的设置')) + (e.measured ? '<div class="meta">' + esc(e.measured) + '</div>' : ''))
+          : esc(e.reason || '');
+        return '<tr><td>' + esc(nameOf[e.id] || e.id) + '</td><td>' + yn + '</td><td>' + mono(e.protocol || '') + '</td><td>' + how + '</td></tr>';
       }).join('');
 
       // 每个档位一个动作：能跑就下、下过就删、跑不动就不给下载按钮。
@@ -1546,7 +1587,7 @@
             '<tr><td>已装模型</td><td>' + esc(String(ol.modelsTotalGB || 0)) + ' GB 合计</td></tr>' +
             '</tbody></table>' +
             (installedRows
-              ? '<table class="tbl"><thead><tr><th>模型</th><th>体积</th><th>下载时间</th></tr></thead><tbody>' + installedRows + '</tbody></table>'
+              ? '<table class="tbl"><thead><tr><th>模型</th><th>体积</th><th>下载时间</th><th>自检</th></tr></thead><tbody>' + installedRows + '</tbody></table>'
               : '<div class="meta">还没有下过模型。下面每一档都给了拉取命令，挑能跑的那档。</div>')
           : '<div class="callout warn">还没装运行时。先装 Ollama：<a href="#/tool/ollama">Ollama 那一页</a>。' +
             '装之前也能看下面的判定 —— 它会告诉你这台机器适合下多大的模型。</div>') +
@@ -1561,6 +1602,12 @@
         '<div class="meta">判定按「显存 → 内存 → 磁盘」的顺序做：显存够就全量进显卡；显存不够但内存够会退到 CPU（慢）；都不够就是跑不动。' +
         '磁盘按模型体积的 1.5 倍预检。</div>' +
         modelCards +
+        '</section>' +
+
+        '<section><h2>接进各智能体</h2>' +
+        '<div class="meta">本地端点就是 ' + mono('http://127.0.0.1:11434/v1') + '（OpenAI 兼容，没有 key）。能不能直连，取决于那个工具说不说 OpenAI 这套协议。</div>' +
+        '<table class="tbl"><thead><tr><th>工具</th><th>能直连</th><th>协议</th><th>怎么接</th></tr></thead><tbody>' + endpointRows + '</tbody></table>' +
+        '<div class="meta">除 Claude Code 外，本工具不代写这些配置 —— 它们是嵌套结构，盲写会把你已有的渠道配置搞坏。各工具自己的页面里给了可复制的片段。</div>' +
         '</section>' +
 
         '<section><details><summary>本地模型的三个已知坑</summary><p class="note">' +

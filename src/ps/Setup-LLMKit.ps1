@@ -69,6 +69,8 @@ param(
     [string]$Restore,
     [string]$ModelPull = '',
     [string]$ModelRemove = '',
+    [switch]$CheckLocalEndpoint,
+    [string]$LocalModelTag = '',
     [string]$Uninstall,
     [switch]$RemoveUserConfig,
     [switch]$CleanOnly,
@@ -167,6 +169,24 @@ if (-not [string]::IsNullOrEmpty($ModelPull) -or -not [string]::IsNullOrEmpty($M
         Write-Line ('失败：' + $_.Exception.Message) 'Red'
         exit 1
     }
+}
+# ---------------------------------------------------------------- 本地端点自检分支
+# 只读：发一条带 tools 的请求，确认这个模型真的会返回结构化工具调用。
+if ($CheckLocalEndpoint) {
+    Write-Line ''
+    Write-Line 'LLMKit · 本地端点自检（工具调用）' 'White'
+    Write-Line ('模式：只读（不下载、不改配置）') 'Green'
+    Write-Line ('-' * 72) 'DarkGray'
+    $r = Test-LLMKitLocalEndpoint -Tag $LocalModelTag
+    Write-Line ('模型：' + $(if ([string]::IsNullOrWhiteSpace($r.model)) { '（自动挑一个已装的）' } else { $r.model })) 'DarkGray'
+    if ($r.ok) {
+        Write-Line ('✅ ' + $r.detail) 'Green'
+        Write-Line ('   返回的工具调用：' + $r.toolName + '(' + $r.toolArgs + ')') 'DarkGray'
+        exit 0
+    }
+    Write-Line ('❌ ' + $r.detail) 'Red'
+    Write-Line ('   结论代码：' + $r.verdict) 'DarkGray'
+    exit 1
 }
 # ---------------------------------------------------------------- 只清理残留分支
 if ($CleanOnly) {

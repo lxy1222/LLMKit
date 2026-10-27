@@ -735,6 +735,54 @@ check('步骤状态跟着安装状态走', cl.indexOf('该你了') >= 0 || cl.in
   } else {
     check('（本机没有已下载的模型，跳过删除确认断言）', true);
   }
+  // --- 接入矩阵 + 工具调用自检 ---
+  check('本地模型页有「接进各智能体」矩阵', localHtml.indexOf('接进各智能体') >= 0);
+  check('矩阵里列出 Anthropic 协议的工具（Claude Code）', localHtml.indexOf('anthropic-messages') >= 0);
+  check('矩阵里说明本工具不代写这些配置', localHtml.indexOf('不代写这些配置') >= 0);
+  const scButtons = (localHtml.match(/data-act="local-endpoint-check"/g) || []).length;
+  check('每个已装模型都有「自检工具调用」按钮', scButtons === (locJson.ollama.models || []).length,
+    '按钮 ' + scButtons + ' / 已装 ' + (locJson.ollama.models || []).length);
+
+  const scModel = (locJson.ollama.models || [])[0];
+  if (scModel) {
+    previewCalls.length = 0; runCalls.length = 0;
+    el('modal').classList.remove('show');
+    clickDocBtn({ 'data-act': 'local-endpoint-check', 'data-target': scModel.name });
+    await wait('自检请求发出', () => runCalls.length > 0, 20000);
+    check('自检是只读动作：不问确认框，直接发起', !el('modal').classList.contains('show'));
+    check('自检请求指向选中的模型', runCalls[0].actionId === 'local-endpoint-check' && runCalls[0].targetId === scModel.name,
+      JSON.stringify(runCalls[0]));
+  } else {
+    check('（本机没装本地模型，跳过自检点击断言）', true);
+  }
+  const toolLocalBlocks = {
+    opencode: { expect: '本地模型（可选）' },
+    'claude-code': { expect: '暂时连不了本地模型' },
+    python: { expect: '' }
+  };
+  for (const tid of Object.keys(toolLocalBlocks)) {
+    setHash('#/tool/' + tid);
+    await wait('工具页 ' + tid, () => el('app').innerHTML.indexOf('工具') >= 0, 20000);
+    const h = el('app').innerHTML;
+    const spec = toolLocalBlocks[tid];
+    if (spec.expect) {
+      check(tid + ' 页有本地模型一段', h.indexOf(spec.expect) >= 0);
+    } else {
+      check('无关工具（python）不出现本地模型段', h.indexOf('本地模型（可选）') < 0 && h.indexOf('连不了本地模型') < 0);
+    }
+  }
+  setHash('#/tool/opencode');
+  await wait('opencode 本地模型段', () => el('app').innerHTML.indexOf('本地模型（可选）') >= 0, 20000);
+  const opLocal = el('app').innerHTML;
+  check('opencode 页给出本机端点', opLocal.indexOf('127.0.0.1:11434/v1') >= 0);
+  check('opencode 页给出可复制的片段', opLocal.indexOf('复制这段片段') >= 0);
+  check('opencode 页说清本工具不代写', opLocal.indexOf('不写这个文件') >= 0);
+  check('opencode 页提示本地不需要 key', opLocal.indexOf('不需要 key') >= 0);
+  setHash('#/tool/claude-code');
+  await wait('claude-code 本地模型段', () => el('app').innerHTML.indexOf('暂时连不了本地模型') >= 0, 20000);
+  const ccLocal = el('app').innerHTML;
+  check('claude-code 页解释是协议不同', ccLocal.indexOf('Anthropic') >= 0);
+  check('claude-code 页不给本地片段（不给假希望）', ccLocal.indexOf('复制这段片段') < 0);
   console.log('启动区');
   setHash('#/tool/opencode');
   await wait('opencode 工具页（启动）', () => el('app').innerHTML.indexOf('怎么启动、怎么用') >= 0);

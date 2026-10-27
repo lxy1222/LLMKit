@@ -100,6 +100,11 @@ function Get-LLMKitActionCatalog {
                 options = @('modelTag')
             })
         [pscustomobject]([ordered]@{
+                id = 'local-endpoint-check'; label = '自检工具调用'; scope = 'global'; destructive = $false
+                desc = '只读：拿一个本地模型发一条带 tools 的请求，确认它真的返回结构化工具调用'
+                options = @('modelTag')
+            })
+        [pscustomobject]([ordered]@{
                 id = 'model-remove'; label = '删除本地模型'; scope = 'global'; destructive = $true
                 desc = '删掉本地模型文件（这一步会真删，不搬备份）；删前记账，可用 ollama pull 装回来'
                 options = @('modelTag')
@@ -216,6 +221,10 @@ function Get-LLMKitActionCommandLine {
         }
         'model-remove' {
             & $add '-ModelRemove'; & $add $TargetId
+        }
+        'local-endpoint-check' {
+            & $add '-CheckLocalEndpoint'
+            if ($TargetId) { & $add '-LocalModelTag'; & $add $TargetId }
         }
         'restore' {
             & $add '-Restore'; & $add $TargetId
@@ -660,6 +669,8 @@ function Get-LLMKitToolDetail {
             actions = @($actions)
             # 工具页要在一次 GET 里就拿到「怎么启动」：不发 POST、不缓存、也不起进程
             launch = (Get-LLMKitToolLaunchSummary -ConfigRoot $ConfigRoot -ToolId $ToolId)
+            # 这个工具能不能把端点指到本机（只给说明与片段，不代写配置）
+            localEndpoint = @(Get-LLMKitLocalEndpointTable -ConfigRoot $ConfigRoot | Where-Object { [string]$_.id -eq $ToolId })[0]
         })
 }
 
@@ -990,6 +1001,20 @@ function Get-LLMKitLaunchSpec {
     return [pscustomobject]$result
 }
 
+function Get-LLMKitLocalEndpointTable {
+    <#
+        读 config/local-endpoints.json：哪个智能体能把端点指到本机、怎么指。
+        文件缺失时返回空数组而不是抛错 —— 工具页不该因为这个文件没打包就整页崩掉。
+    #>
+    param([Parameter(Mandatory = $true)][string]$ConfigRoot)
+
+    $path = Join-Path $ConfigRoot 'config\local-endpoints.json'
+    if (-not (Test-Path -LiteralPath $path)) { return @() }
+    try {
+        $data = Get-Content -LiteralPath $path -Raw -Encoding UTF8 | ConvertFrom-Json
+        return @($data.tools)
+    } catch { return @() }
+}
 function Get-LLMKitLocalReport {
     <#
         本地模型页要的全部数据：硬件 → 每个模型的适配判定 → 运行时状态。
@@ -1076,6 +1101,18 @@ function Get-LLMKitLocalReport {
                     modelsTotalGB = [math]::Round($totalGB, 2)
                 })
             models        = @($items)
+            # 接入矩阵：哪个智能体能直连本机端点、哪个不能、为什么
+            endpoints     = @(Get-LLMKitLocalEndpointTable -ConfigRoot $ConfigRoot | ForEach-Object {
+                    [pscustomobject]([ordered]@{
+                            id         = [string](Get-ObjectProp -Object $_ -Name 'id')
+                            supported  = [bool](Get-ObjectProp -Object $_ -Name 'supported')
+                            protocol   = [string](Get-ObjectProp -Object $_ -Name 'protocol')
+                            reason     = [string](Get-ObjectProp -Object $_ -Name 'reason')
+                            workaround = [string](Get-ObjectProp -Object $_ -Name 'workaround')
+                            configPath = [string](Get-ObjectProp -Object $_ -Name 'configPath')
+                            measured   = [string](Get-ObjectProp -Object $_ -Name 'measured')
+                        })
+                })
         })
 }
 Export-ModuleMember -Function `

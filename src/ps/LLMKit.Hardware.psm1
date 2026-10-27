@@ -556,6 +556,84 @@ function Invoke-LLMKitModelRemove {
     if ($OnLine) { & $OnLine ('已删除 ' + $Tag + '，释放约 ' + $sizeGB + ' GB') }
     return [pscustomobject]@{ tag = $Tag; sizeGB = $sizeGB; verified = $true }
 }
+function Test-LLMKitLocalEndpoint {
+    <#
+        工具调用自检：拿一个本地模型发一条**带 tools** 的请求，看它是不是真的
+        返回结构化 tool_calls。
+
+        为什么必须有这一条：模型卡上写着 tools 不代表它会用。实测 deepseek-r1:7b
+        在同样请求下只把调用当普通文本吐出来，agent 于是原地打转、还不报错。
+        这一项是"能不能拿去跑智能体"的唯一判据。
+
+        只读：不下载、不改配置。服务没跑/没装模型时给结论，不抛异常（页面要能打开）。
+    #>
+    param(
+        [string]$Tag = '',
+        [int]$ContextLength = 32768
+    )
+
+    if (-not (Test-LLMKitOllamaRunning)) {
+        return [pscustomobject]@{ ok = $false; verdict = 'no-service'; model = $Tag; toolName = ''; toolArgs = ''; detail = 'Ollama 服务没在跑。先启动 Ollama（托盘图标），再自检。' }
+    }
+
+    $status = Get-LLMKitOllamaStatus
+    $models = @($status.models)
+    if ($models.Count -eq 0) {
+        return [pscustomobject]@{ ok = $false; verdict = 'no-model'; model = $Tag; toolName = ''; toolArgs = ''; detail = '一个本地模型都没装。先在「本地模型」页下载一档，再来自检。' }
+    }
+
+    $target = $Tag
+    if ([string]::IsNullOrWhiteSpace($target)) { $target = [string]$models[0].name }
+    $hit = @($models | Where-Object { [string]$_.name -eq $target })
+    if ($hit.Count -eq 0) {
+        return [pscustomobject]@{ ok = $false; verdict = 'no-model'; model = $target; toolName = ''; toolArgs = ''; detail = ('没装这个模型：' + $target + '。先下载它，或者换一个已装的再来。') }
+    }
+
+    $tools = @(@{
+            type     = 'function'
+            function = @{
+                name        = 'get_weather'
+                description = 'Get current weather for a city'
+                parameters  = @{ type = 'object'; properties = @{ city = @{ type = 'string' } }; required = @('city') }
+            }
+        })
+    $body = @{
+        model    = $target
+        messages = @(@{ role = 'user'; content = '北京现在天气怎么样？请调用 get_weather 工具查询。' })
+        tools    = $tools
+        stream   = $false
+        options  = @{ num_ctx = $ContextLength; num_predict = 256 }
+    }
+    $bytes = [System.Text.Encoding]::UTF8.GetBytes(($body | ConvertTo-Json -Depth 10))
+    $sw = [System.Diagnostics.Stopwatch]::StartNew()
+    try {
+        $resp = Invoke-WebRequest -Uri 'http://127.0.0.1:11434/v1/chat/completions' -Method Post -Body $bytes `
+            -ContentType 'application/json; charset=utf-8' -UseBasicParsing -TimeoutSec 600
+    } catch {
+        $sw.Stop()
+        return [pscustomobject]@{ ok = $false; verdict = 'error'; model = $target; toolName = ''; toolArgs = ''; detail = ('请求失败：' + $_.Exception.Message) }
+    }
+    $sw.Stop()
+
+    $json = [System.Text.Encoding]::UTF8.GetString($resp.RawContentStream.ToArray()) | ConvertFrom-Json
+    $msg = @($json.choices)[0].message
+    $calls = @($msg.tool_calls | Where-Object { $_ })
+    if ($calls.Count -gt 0) {
+        $name = [string]$calls[0].function.name
+        $argsText = [string]$calls[0].function.arguments
+        return [pscustomobject]@{
+            ok = $true; verdict = 'ok'; model = $target; toolName = $name; toolArgs = $argsText
+            detail = ('它会用工具：返回了结构化 tool_calls（' + $name + '），用时 ' + [math]::Round($sw.Elapsed.TotalSeconds, 1) + ' 秒。可以拿去接智能体。')
+        }
+    }
+
+    $text = [string]$msg.content
+    if ($text.Length -gt 120) { $text = $text.Substring(0, 120) + '…' }
+    return [pscustomobject]@{
+        ok = $false; verdict = 'no-tool-calls'; model = $target; toolName = ''; toolArgs = ''
+        detail = ('它把工具调用当成了普通文本，没有返回 tool_calls。别拿这个模型跑智能体。它回的是：' + $text)
+    }
+}
 Export-ModuleMember -Function `
     'Get-LLMKitHardware', 'Get-LLMKitModelVerdict', 'Get-LLMKitModelCatalog', `
-    'Get-LLMKitOllamaStatus', 'Get-LLMKitOllamaModelRoot', 'Get-LLMKitDiskFreeGB', 'Get-LLMKitModelPullPlan', 'Invoke-LLMKitModelPull', 'Invoke-LLMKitModelRemove', 'Resolve-LLMKitOllamaExe', 'Test-LLMKitOllamaRunning', 'Get-LLMKitDiskGate'
+    'Get-LLMKitOllamaStatus', 'Get-LLMKitOllamaModelRoot', 'Get-LLMKitDiskFreeGB', 'Get-LLMKitModelPullPlan', 'Invoke-LLMKitModelPull', 'Invoke-LLMKitModelRemove', 'Resolve-LLMKitOllamaExe', 'Test-LLMKitOllamaRunning', 'Get-LLMKitDiskGate', 'Test-LLMKitLocalEndpoint'

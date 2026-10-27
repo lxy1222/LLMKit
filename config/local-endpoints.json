@@ -1,0 +1,72 @@
+{
+  "schemaVersion": 1,
+  "checkedAt": "2026-10-27",
+  "baseUrl": "http://127.0.0.1:11434/v1",
+  "note": "本地端点怎么接进各个智能体。supported 只表示协议上能不能直连，不代表我们代写配置 —— 除 Claude Code 那一格（本项目唯一自动写入的）之外，其余只给可复制的片段。实测状态写在 measured 里：没实测过的就写没实测过。",
+  "apiKeyNote": "本地端点不需要 key。有的工具要求这个字段必填，随便填一个占位（比如 local）就行 —— 千万不要把真实 key 填进来。",
+  "tools": [
+    {
+      "id": "opencode",
+      "supported": true,
+      "protocol": "openai-completions",
+      "apiKeyNote": "本地端点不需要 key。有的工具这个字段必填，随便填一个占位（比如 local）就行 —— 千万别把真实 key 填进来。",
+      "configPath": "%USERPROFILE%\\.config\\opencode\\opencode.json",
+      "configFormat": "json",
+      "measured": "实测确认结构：provider.<名字>.options.baseURL + apiKey",
+      "steps": [
+        "打开 %USERPROFILE%\\.config\\opencode\\opencode.json",
+        "在 provider 里加一个条目（片段见下），models 里写你要用的那个本地模型 tag",
+        "重开一个终端再启动 opencode，它就会列出这个本地模型"
+      ],
+      "snippet": "{\n  \"provider\": {\n    \"ollama\": {\n      \"npm\": \"@ai-sdk/openai-compatible\",\n      \"options\": {\n        \"baseURL\": \"http://127.0.0.1:11434/v1\",\n        \"apiKey\": \"local\"\n      },\n      \"models\": {\n        \"qwen3.5:9b\": { \"name\": \"Qwen3.5 9B（本地）\" }\n      }\n    }\n  }\n}",
+      "caveat": "本工具不写这个文件：provider 是嵌套结构，盲写很容易把你自己已有的渠道配置搞坏。"
+    },
+    {
+      "id": "codex",
+      "supported": true,
+      "protocol": "openai-completions",
+      "apiKeyNote": "本地端点不需要 key。有的工具这个字段必填，随便填一个占位（比如 local）就行 —— 千万别把真实 key 填进来。",
+      "configPath": "%USERPROFILE%\\.codex\\config.toml",
+      "configFormat": "toml",
+      "measured": "按 Codex 官方「自定义模型提供方」的写法给出，未在本机实测（本机没装 Codex）",
+      "steps": [
+        "打开 %USERPROFILE%\\.codex\\config.toml",
+        "加一个 model_providers 段（片段见下），并把 model_provider 指过去",
+        "重开终端运行 codex，启动信息里会显示用的是哪个 provider"
+      ],
+      "snippet": "[model_providers.ollama]\nname = \"Ollama (local)\"\nbase_url = \"http://127.0.0.1:11434/v1\"\nenv_key = \"OLLAMA_API_KEY\"\n\n# 然后把默认模型指过去（字段名以 Codex 文档为准）：\n# model_provider = \"ollama\"\n# model = \"qwen3.5:9b\"",
+      "caveat": "本工具不写这个文件；各字段的含义与默认值请对照 Codex 官方文档，别照抄了却以为生效了。"
+    },
+    {
+      "id": "dsh",
+      "supported": true,
+      "protocol": "openai-completions",
+      "apiKeyNote": "本地端点不需要 key。有的工具这个字段必填，随便填一个占位（比如 local）就行 —— 千万别把真实 key 填进来。",
+      "configPath": "%DSH_HOME%\\profiles\\web\\cordis.patch.yml",
+      "configFormat": "yaml",
+      "measured": "官方支持「Custom model API」（api: openai-completions + baseURL + key 留空），未在本机跑通一次完整任务",
+      "steps": [
+        "打开 dsh 的 Settings → Models",
+        "点 Add model provider，把卡片切到 Custom model API",
+        "Base URL 填 http://127.0.0.1:11434/v1，协议选 OpenAI Chat Completions，API key 留空",
+        "点 Fetch available models 勾选本地模型并保存"
+      ],
+      "snippet": "- id: llm-pi-ai\n  config:\n    providers:\n      local-ollama:\n        api: openai-completions\n        baseURL: http://127.0.0.1:11434/v1\n        models:\n          - id: qwen3.5:9b",
+      "caveat": "已知兼容风险：dsh 对声明了推理等级的模型会发 role=developer 与 max_completion_tokens，部分本地网关不认，表现是「每次请求都被拒绝」。真遇到就把推理等级关掉再试。"
+    },
+    {
+      "id": "claude-code",
+      "supported": false,
+      "protocol": "anthropic-messages",
+      "reason": "Claude Code 只说 Anthropic 协议（/v1/messages），本地 Ollama 给的是 OpenAI 协议（/v1/chat/completions）。中间需要一个翻译代理，这一版不做 —— 页面上也不会给你假希望。",
+      "workaround": "想现在就用：社区有 claude-code-router 这类代理，把 Anthropic 协议翻译成 OpenAI 协议再转给 127.0.0.1:11434。这一条不在本工具的支持范围内，出了问题我们兜不住。"
+    },
+    {
+      "id": "gemini-cli",
+      "supported": false,
+      "protocol": "gemini",
+      "reason": "Gemini CLI 的自定义端点（GOOGLE_GEMINI_BASE_URL）走的是 Gemini 自己的协议，Ollama 不说这个协议，所以直连不了。",
+      "workaround": "同样需要一层协议翻译代理。另外它的渠道切换现在交给 cc-switch 管。"
+    }
+  ]
+}

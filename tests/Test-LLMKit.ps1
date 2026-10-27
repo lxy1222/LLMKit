@@ -428,7 +428,7 @@ foreach ($c in @(
 Write-Host '动作层（服务层）' -ForegroundColor Cyan
 # ======================================================================
 $actions = @(Get-LLMKitActionCatalog)
-Assert-True ($actions.Count -ge 10) ('动作清单至少 10 条（实际 ' + $actions.Count + '）')
+Assert-True ($actions.Count -ge 11) ('动作清单至少 11 条（实际 ' + $actions.Count + '）')
 Assert-Equal $actions.Count (@($actions | ForEach-Object { $_.id } | Sort-Object -Unique).Count) '动作 id 无重复'
 Assert-Equal 0 (@($actions | Where-Object { [string]::IsNullOrEmpty($_.label) -or [string]::IsNullOrEmpty($_.desc) -or [string]::IsNullOrEmpty($_.scope) }).Count) '每条动作都有 label / desc / scope'
 Assert-Equal 0 (@($actions | Where-Object { @('global', 'tool', 'session') -notcontains $_.scope }).Count) 'scope 取值合法'
@@ -442,7 +442,7 @@ foreach ($a in $actions) {
     if ($a.scope -eq 'tool') { $tgt = 'opencode' }
     elseif ($a.scope -eq 'session') { $tgt = 'out\state\sessions\example.json' }
     # 模型动作的 TargetId 是模型 tag（不是工具 id）；不补一个的话它会被"必须给 tag"的校验拦下
-    elseif (@('model-pull', 'model-remove') -contains $a.id) { $tgt = 'qwen3.5:2b' }
+    elseif (@('model-pull', 'model-remove', 'local-endpoint-check') -contains $a.id) { $tgt = 'qwen3.5:2b' }
     $dry = Get-LLMKitActionCommandLine -ActionId $a.id -ConfigRoot $svcRoot -TargetId $tgt
     $real = Get-LLMKitActionCommandLine -ActionId $a.id -ConfigRoot $svcRoot -TargetId $tgt -Apply
     Assert-True ($dry.arguments -notcontains '-Apply') ('演练模式 ' + $a.id + ' 绝不带 -Apply')
@@ -828,6 +828,65 @@ Assert-True ([bool]$blk.ok) '剩 5 GB 下 2.9 GB（要 4.4 GB）→ 允许'
 $blk2 = Get-LLMKitDiskGate -SizeGB 18 -DiskFreeGB 5.0 -ModelRoot 'F:\m'
 Assert-True (-not [bool]$blk2.ok) '剩 5 GB 下 18 GB（要 27 GB）→ 拒绝'
 Assert-True ([string]$blk2.reason -match '磁盘不够') '拒绝时说的是磁盘不够，不是说别的'
+# ======================================================================
+Write-Host ''
+Write-Host '本地端点接入表（能不能直连，按协议说实话）' -ForegroundColor Cyan
+# ======================================================================
+# 这张表是"本地模型怎么接进各智能体"的唯一事实来源。两条铁律：
+#   · 能直连 → 必须给出配置文件位置 + 至少两步说明 + 明说本工具不代写
+#   · 不能直连 → 必须给出原因，绝不能为了"看起来支持得多"就标成能
+$epPath = Join-Path $projectRoot 'config\local-endpoints.json'
+Assert-True (Test-Path -LiteralPath $epPath) '有本地端点接入表'
+$eps = @((Get-Content -LiteralPath $epPath -Raw -Encoding UTF8 | ConvertFrom-Json).tools)
+Assert-Equal 5 $eps.Count ('接入表覆盖 5 个智能体（实际 ' + $eps.Count + '）')
+$epToolIds = @($allTools | ForEach-Object { [string](Get-ObjectProp -Object $_ -Name 'id') })
+$scanToolIds = @('claude-code', 'codex', 'opencode', 'gemini-cli', 'dsh')
+foreach ($e in $eps) {
+    $eid = [string](Get-ObjectProp -Object $e -Name 'id')
+    Assert-True ($scanToolIds -contains $eid) ('接入表的 id 是登记的智能体：' + $eid)
+    Assert-True ($epToolIds -contains $eid) ('接入表的 id 在工具目录里：' + $eid)
+    if ([bool](Get-ObjectProp -Object $e -Name 'supported')) {
+        Assert-True ([string](Get-ObjectProp -Object $e -Name 'configPath')).Length -gt 0 ($eid + ' 能直连就必须给出配置文件位置')
+        Assert-True (@(Get-ObjectProp -Object $e -Name 'steps').Count -ge 2) ($eid + ' 能直连就要给步骤（至少两步）')
+        Assert-True ([string](Get-ObjectProp -Object $e -Name 'snippet')).Length -gt 0 ($eid + ' 要给出可复制的片段')
+        Assert-True ([string](Get-ObjectProp -Object $e -Name 'caveat')).Length -gt 0 ($eid + ' 要说明本工具不代写')
+        Assert-True ([string](Get-ObjectProp -Object $e -Name 'apiKeyNote')).Length -gt 0 ($eid + ' 要说明本地不需要 key（防止用户把真 key 填进去）')
+    } else {
+        Assert-True ([string](Get-ObjectProp -Object $e -Name 'reason')).Length -gt 0 ($eid + ' 不能直连就必须给原因')
+    }
+}
+# 不能为了"全覆盖"把 Claude Code 说成能直连：它只说 Anthropic 协议
+$ccEp = @($eps | Where-Object { [string](Get-ObjectProp -Object $_ -Name 'id') -eq 'claude-code' })[0]
+Assert-True (-not [bool](Get-ObjectProp -Object $ccEp -Name 'supported')) 'Claude Code 的本地接入标为不支持'
+Assert-Equal 'anthropic-messages' ([string](Get-ObjectProp -Object $ccEp -Name 'protocol')) 'Claude Code 标的是 Anthropic 协议'
+$gmEp = @($eps | Where-Object { [string](Get-ObjectProp -Object $_ -Name 'id') -eq 'gemini-cli' })[0]
+Assert-True (-not [bool](Get-ObjectProp -Object $gmEp -Name 'supported')) 'Gemini CLI 的本地接入也标为不支持'
+# 能直连的三个必须是真能说 OpenAI 协议的那三个
+$supportedIds = @($eps | Where-Object { [bool](Get-ObjectProp -Object $_ -Name 'supported') } | ForEach-Object { [string](Get-ObjectProp -Object $_ -Name 'id') })
+Assert-Equal 3 $supportedIds.Count ('能直连的是 3 个（实际：' + ($supportedIds -join '、') + '）')
+foreach ($need in @('opencode', 'codex', 'dsh')) {
+    Assert-True ($supportedIds -contains $need) ($need + ' 标为能直连')
+}
+
+# 工具详情里要把它带出来（界面据此渲染，不在前端拼句子）
+$opDetail = Get-LLMKitToolDetail -ConfigRoot $svcRoot -ToolId 'opencode'
+$opEp = Get-ObjectProp -Object $opDetail -Name 'localEndpoint'
+Assert-True ($null -ne $opEp) '工具详情里带了 localEndpoint'
+Assert-True ([bool](Get-ObjectProp -Object $opEp -Name 'supported')) 'opencode 的详情里说它能直连'
+$ccDetail = Get-LLMKitToolDetail -ConfigRoot $svcRoot -ToolId 'claude-code'
+$ccDetailEp = Get-ObjectProp -Object $ccDetail -Name 'localEndpoint'
+Assert-True (-not [bool](Get-ObjectProp -Object $ccDetailEp -Name 'supported')) 'claude-code 的详情里说它不能直连'
+$pyDetail = Get-LLMKitToolDetail -ConfigRoot $svcRoot -ToolId 'python'
+Assert-True ($null -eq (Get-ObjectProp -Object $pyDetail -Name 'localEndpoint')) '无关工具（python）不带本地端点信息'
+
+# 自检动作：只读、非 destructive、命令行带 -CheckLocalEndpoint
+$chk = @($actions | Where-Object { $_.id -eq 'local-endpoint-check' })
+Assert-Equal 1 $chk.Count '清单里有「自检工具调用」'
+Assert-True (-not [bool]$chk[0].destructive) '自检是只读动作（不弹确认框）'
+$chkCmd = Get-LLMKitActionCommandLine -ActionId 'local-endpoint-check' -ConfigRoot $projectRoot -TargetId 'qwen3.5:9b' -Apply
+Assert-True (@($chkCmd.arguments) -contains '-CheckLocalEndpoint') '命令里有 -CheckLocalEndpoint'
+Assert-True (@($chkCmd.arguments) -contains '-LocalModelTag') '命令带上要检查的模型 tag'
+Assert-True (-not (@($chkCmd.arguments) -contains '-Apply')) '只读动作永不带 -Apply'
 Write-Host ('-' * 60) -ForegroundColor DarkGray
 if ($script:Fail -eq 0) {
     Write-Host ('全部通过：' + $script:Pass + ' 项') -ForegroundColor Green
