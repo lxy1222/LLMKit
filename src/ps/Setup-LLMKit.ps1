@@ -71,6 +71,9 @@ param(
     [string]$ModelRemove = '',
     [switch]$CheckLocalEndpoint,
     [int]$SetLocalContext = 0,
+    [string]$LocalSwitch = '',
+    [string]$ModelTag = '',
+    [switch]$LocalSwitchUndo,
     [string]$LocalModelTag = '',
     [string]$Uninstall,
     [switch]$RemoveUserConfig,
@@ -102,6 +105,7 @@ Import-Module (Join-Path $scriptDir 'LLMKit.Tools.psm1') -Force -DisableNameChec
 Import-Module (Join-Path $scriptDir 'LLMKit.Config.psm1') -Force -DisableNameChecking
 Import-Module (Join-Path $scriptDir 'LLMKit.Diagnose.psm1') -Force -DisableNameChecking
 Import-Module (Join-Path $scriptDir 'LLMKit.Hardware.psm1') -Force -DisableNameChecking
+Import-Module (Join-Path $scriptDir 'LLMKit.LocalConfig.psm1') -Force -DisableNameChecking
 
 # powershell.exe -File 不会按逗号拆数组参数：-Only node,git 会原样变成单个字符串 "node,git"。
 # 用 cmd / powershell 调用脚本是最常见的用法，必须自己拆开，
@@ -170,6 +174,36 @@ if (-not [string]::IsNullOrEmpty($ModelPull) -or -not [string]::IsNullOrEmpty($M
         Write-Line ('失败：' + $_.Exception.Message) 'Red'
         exit 1
     }
+}
+# ---------------------------------------------------------------- 本地模型切换分支
+# 把某个智能体的配置切到本地端点，或切回原样。两件事都要求 -Apply。
+if (-not [string]::IsNullOrEmpty($LocalSwitch)) {
+    $targets = @('opencode', 'codex')
+    if ($targets -notcontains $LocalSwitch) { Write-Line ('不支持的切换目标：' + $LocalSwitch + '（只做 ' + ($targets -join ' / ') + '）') 'Red'; exit 1 }
+    Write-Line ''
+    if ($LocalSwitchUndo) {
+        Write-Line ('LLMKit · 切回原来的配置：' + $LocalSwitch) 'White'
+        Write-Line ('模式：' + $(if ($Apply) { '执行（-Apply）' } else { '演练（DryRun，不改文件）' })) $(if ($Apply) { 'Yellow' } else { 'Green' })
+        Write-Line ('-' * 72) 'DarkGray'
+        $onLine3 = { param($s) Write-Line ('  ' + $s) 'DarkGray' }
+        $res = Undo-LLMKitLocalSwitch -Target $LocalSwitch -StateDir $StateDir -Apply:$Apply -OnLine $onLine3
+        if ($res.ok) { Write-Line ('完成：' + $res.detail) 'Green'; exit 0 }
+        Write-Line ('失败：' + $res.detail) 'Red'
+        exit 1
+    }
+
+    if ([string]::IsNullOrWhiteSpace($ModelTag)) { Write-Line '切到本地需要指定 -ModelTag（例如 qwen3.5:9b）。' 'Red'; exit 1 }
+    Write-Line ('LLMKit · 切到本地模型：' + $LocalSwitch + ' → ' + $ModelTag) 'White'
+    Write-Line ('模式：' + $(if ($Apply) { '执行（-Apply，会改它的配置文件）' } else { '演练（DryRun，只打印计划）' })) $(if ($Apply) { 'Yellow' } else { 'Green' })
+    Write-Line ('-' * 72) 'DarkGray'
+    $ollamaNow = Get-LLMKitOllamaStatus
+    $installedTags = @($ollamaNow.models | ForEach-Object { [string]$_.name })
+    if ($installedTags -notcontains $ModelTag) { Write-Line ('本机没有这个模型：' + $ModelTag + '。先下载它，或者换一个已装的。') 'Red'; exit 1 }
+    $onLine4 = { param($s) Write-Line ('  ' + $s) 'DarkGray' }
+    $res2 = Set-LLMKitLocalSwitch -Target $LocalSwitch -ModelTag $ModelTag -AllTags $installedTags -StateDir $StateDir -Apply:$Apply -OnLine $onLine4
+    if ($res2.ok) { Write-Line ('完成：' + $res2.detail + $(if ($res2.dryRun) { '' } else { '；备份：' + $res2.backup })) 'Green'; exit 0 }
+    Write-Line ('失败：' + $res2.detail) 'Red'
+    exit 1
 }
 # ---------------------------------------------------------------- 本地上下文分支
 # 改 Ollama 的服务端默认上下文。默认 4096 且静默截断，agent 会半路失忆。

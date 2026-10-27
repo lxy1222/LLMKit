@@ -26,7 +26,7 @@ try {
     # 反斜杠条目名不符合 zip 规范，严格的解压器会解出名字里带反斜杠的怪文件
     $backslash = @($names | Where-Object { $_.Contains('\') })
     if ($backslash.Count -gt 0) { throw ('载荷里有 ' + $backslash.Count + ' 个反斜杠条目名') }
-    foreach ($need in @('web/index.html', 'web/assets/app.js', 'web/assets/app.css', 'src/ps/LLMKit.Web.psm1', 'src/ps/LLMKit.Engine.psm1', 'src/ps/LLMKit.Hardware.psm1', 'config/tools.json', 'config/models.json', 'config/local-endpoints.json')) {
+    foreach ($need in @('web/index.html', 'web/assets/app.js', 'web/assets/app.css', 'src/ps/LLMKit.Web.psm1', 'src/ps/LLMKit.Engine.psm1', 'src/ps/LLMKit.Hardware.psm1', 'src/ps/LLMKit.LocalConfig.psm1', 'config/tools.json', 'config/models.json', 'config/local-endpoints.json')) {
         if ($names -notcontains $need) { throw ('载荷缺少：' + $need) }
     }
     Write-Host ('载荷 ' + $names.Count + ' 个文件，关键文件齐全')

@@ -100,6 +100,15 @@ function Get-LLMKitActionCatalog {
                 options = @('modelTag')
             })
         [pscustomobject]([ordered]@{
+                id = 'tool-local-switch'; label = '切到本地模型'; scope = 'tool'; destructive = $true
+                desc = '把某个智能体的配置指向本地端点（OpenCode / Codex）；写前整份备份，可一键切回'
+                options = @('modelTag')
+            })
+        [pscustomobject]([ordered]@{
+                id = 'tool-local-switch-undo'; label = '切回原来的配置'; scope = 'tool'; destructive = $true
+                desc = '用备份把配置文件整份还原（连格式一起回去）'
+            })
+        [pscustomobject]([ordered]@{
                 id = 'local-context'; label = '把上下文设成 32K'; scope = 'global'; destructive = $true
                 desc = '改 Ollama 的服务端默认上下文（默认只有 4096，超出会静默截断），会重启一次 Ollama 并验证真的生效'
                 options = @('contextLength')
@@ -150,6 +159,7 @@ function Get-LLMKitActionCommandLine {
         [string]$AuthTokenEnvVar = '',
         [string[]]$ToolIds = @(),
         [string]$Model = '',
+        [string]$ModelTag = '',
         [switch]$SkipOnboarding,
         [string]$Proxy = ''
     )
@@ -233,6 +243,14 @@ function Get-LLMKitActionCommandLine {
         }
         'local-context' {
             & $add '-SetLocalContext'; & $add '32768'
+        }
+        'tool-local-switch' {
+            if ([string]::IsNullOrWhiteSpace($ModelTag)) { throw '切到本地需要指定模型 tag。' }
+            & $add '-LocalSwitch'; & $add $TargetId
+            & $add '-ModelTag'; & $add $ModelTag
+        }
+        'tool-local-switch-undo' {
+            & $add '-LocalSwitchUndo'; & $add $TargetId
         }
         'restore' {
             & $add '-Restore'; & $add $TargetId
@@ -1125,6 +1143,20 @@ function Get-LLMKitLocalReport {
                     contextApplied   = [bool]$ctx.applied
                 })
             models        = @($items)
+            # 能自动切换的两个目标（其余只给说明）
+            switchTargets = @(Get-LLMKitLocalSwitchTargets | ForEach-Object {
+                    $st = Get-LLMKitLocalSwitchState -Target $_.id
+                    [pscustomobject]([ordered]@{
+                            id         = [string]$_.id
+                            name       = [string]$_.name
+                            format     = [string]$_.format
+                            configPath = [string]$_.configPath
+                            exists     = [bool]$_.exists
+                            applied    = [bool]$st.applied
+                            model      = [string]$st.model
+                            detail     = [string]$st.detail
+                        })
+                })
             # 接入矩阵：哪个智能体能直连本机端点、哪个不能、为什么
             endpoints     = @(Get-LLMKitLocalEndpointTable -ConfigRoot $ConfigRoot | ForEach-Object {
                     [pscustomobject]([ordered]@{

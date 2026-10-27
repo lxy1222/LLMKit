@@ -30,6 +30,7 @@ Import-Module (Join-Path $ModuleRoot 'LLMKit.Config.psm1') -Force -DisableNameCh
 Import-Module (Join-Path $ModuleRoot 'LLMKit.Diagnose.psm1') -Force -DisableNameChecking
 Import-Module (Join-Path $ModuleRoot 'LLMKit.Engine.psm1') -Force -DisableNameChecking
 Import-Module (Join-Path $ModuleRoot 'LLMKit.Hardware.psm1') -Force -DisableNameChecking
+Import-Module (Join-Path $ModuleRoot 'LLMKit.LocalConfig.psm1') -Force -DisableNameChecking
 Import-Module (Join-Path $ModuleRoot 'LLMKit.Service.psm1') -Force -DisableNameChecking
 
 $script:Pass = 0
@@ -428,7 +429,7 @@ foreach ($c in @(
 Write-Host '动作层（服务层）' -ForegroundColor Cyan
 # ======================================================================
 $actions = @(Get-LLMKitActionCatalog)
-Assert-True ($actions.Count -ge 12) ('动作清单至少 12 条（实际 ' + $actions.Count + '）')
+Assert-True ($actions.Count -ge 14) ('动作清单至少 14 条（实际 ' + $actions.Count + '）')
 Assert-Equal $actions.Count (@($actions | ForEach-Object { $_.id } | Sort-Object -Unique).Count) '动作 id 无重复'
 Assert-Equal 0 (@($actions | Where-Object { [string]::IsNullOrEmpty($_.label) -or [string]::IsNullOrEmpty($_.desc) -or [string]::IsNullOrEmpty($_.scope) }).Count) '每条动作都有 label / desc / scope'
 Assert-Equal 0 (@($actions | Where-Object { @('global', 'tool', 'session') -notcontains $_.scope }).Count) 'scope 取值合法'
@@ -443,8 +444,11 @@ foreach ($a in $actions) {
     elseif ($a.scope -eq 'session') { $tgt = 'out\state\sessions\example.json' }
     # 模型动作的 TargetId 是模型 tag（不是工具 id）；不补一个的话它会被"必须给 tag"的校验拦下
     elseif (@('model-pull', 'model-remove', 'local-endpoint-check') -contains $a.id) { $tgt = 'qwen3.5:2b' }
-    $dry = Get-LLMKitActionCommandLine -ActionId $a.id -ConfigRoot $svcRoot -TargetId $tgt
-    $real = Get-LLMKitActionCommandLine -ActionId $a.id -ConfigRoot $svcRoot -TargetId $tgt -Apply
+    # 切到本地还要一个模型 tag，否则命令拼不出来（这是对的：没 tag 就没法切）
+    $callArgs = @{ ActionId = $a.id; ConfigRoot = $svcRoot; TargetId = $tgt }
+    if ($a.id -eq 'tool-local-switch') { $callArgs['ModelTag'] = 'qwen3.5:9b' }
+    $dry = Get-LLMKitActionCommandLine @callArgs
+    $real = Get-LLMKitActionCommandLine @callArgs -Apply
     Assert-True ($dry.arguments -notcontains '-Apply') ('演练模式 ' + $a.id + ' 绝不带 -Apply')
     if ($a.destructive) {
         Assert-True ($real.arguments -contains '-Apply') ('destructive 动作 ' + $a.id + ' 执行时才带 -Apply')
@@ -982,6 +986,78 @@ Assert-True (@($ctxDry.arguments) -contains '-SetLocalContext') '命令里有 -S
 Assert-True (@($ctxDry.arguments) -contains '32768') '命令里写了 32768'
 $ctxReal = Get-LLMKitActionCommandLine -ActionId 'local-context' -ConfigRoot $projectRoot -Apply
 Assert-True (@($ctxReal.arguments) -contains '-Apply') '执行模式才带 -Apply'
+# ======================================================================
+Write-Host ''
+Write-Host '本地模型切换：只改该改的那一块，且能整份还原' -ForegroundColor Cyan
+# ======================================================================
+# 这两家的配置里有用户自己的渠道与 key。这里钉三件事：
+#   1. 别的内容原样保留（别的 provider、别的 section）
+#   2. 顶层键只改 model 与 model_provider，段里的同名键不许动
+#   3. 切回时按备份逐字节还原
+$swTargets = @(Get-LLMKitLocalSwitchTargets)
+Assert-Equal 2 $swTargets.Count ('能自动切换的目标是 2 个（实际 ' + $swTargets.Count + '）')
+Assert-Equal 'opencode,codex' ((@($swTargets | ForEach-Object { $_.id })) -join ',') '目标是 opencode 与 codex'
+
+$origOpen = '{"provider":{"deepseek":{"npm":"x","options":{"apiKey":"sk-KEEP"}}}}'
+$newOpen = New-LLMKitOpencodeConfigText -OriginalText $origOpen -ModelTag 'qwen3.5:9b' -AllTags @('qwen3.5:9b', 'gemma4:26b')
+$jo = $newOpen | ConvertFrom-Json
+Assert-True ($jo.provider.PSObject.Properties.Name -contains 'ollama') 'OpenCode：加上了 provider.ollama'
+Assert-True ($jo.provider.PSObject.Properties.Name -contains 'deepseek') 'OpenCode：原有的 deepseek 渠道还在'
+Assert-Equal 'sk-KEEP' ([string]$jo.provider.deepseek.options.apiKey) 'OpenCode：原有的 key 没被动'
+Assert-Equal 'http://127.0.0.1:11434/v1' ([string]$jo.provider.ollama.options.baseURL) 'OpenCode：baseURL 指向本机'
+Assert-Equal 'local' ([string]$jo.provider.ollama.options.apiKey) 'OpenCode：本地 key 用占位（不是真 key）'
+Assert-Equal 2 (@($jo.provider.ollama.models.PSObject.Properties.Name).Count) 'OpenCode：models 里列了两个已装模型'
+$newOpenEmpty = New-LLMKitOpencodeConfigText -OriginalText '' -ModelTag 'x:1b'
+Assert-True (($newOpenEmpty | ConvertFrom-Json).provider.PSObject.Properties.Name -contains 'ollama') 'OpenCode：文件不存在时也能生成最小配置'
+
+$origCodex = "model = `"gpt-5`"`nmodel_provider = `"openai`"`n`n[profiles.fast]`nmodel = `"gpt-5-mini`"`n`n[model_providers.ollama]`nname = `"old`"`nbase_url = `"http://old:9999/v1`"`n"
+$newCodex = New-LLMKitCodexConfigText -OriginalText $origCodex -ModelTag 'gemma4:26b'
+Assert-True ($newCodex -match '(?m)^model = "gemma4:26b"$') 'Codex：顶层 model 改成选中的本地模型'
+Assert-True ($newCodex -match '(?m)^model_provider = "ollama"$') 'Codex：顶层 model_provider 指向 ollama'
+Assert-True ($newCodex -match '(?m)^\[profiles\.fast\]\r?\nmodel = "gpt-5-mini"$') 'Codex：段里的同名 model 键没被误改'
+Assert-True ($newCodex -notmatch '9999') 'Codex：旧的 base_url 被替换'
+Assert-Equal 1 (@([regex]::Matches($newCodex, '(?m)^\[model_providers\.ollama\]')).Count) 'Codex：只保留一个 ollama 段'
+
+# ---- 往返：切过去 → 状态对 → 切回来 → 逐字节一致（用临时目录冒充用户目录）----
+$realProfile = $env:USERPROFILE
+$sandboxHome = Join-Path ([System.IO.Path]::GetTempPath()) ('llmkit-sw-' + [guid]::NewGuid().ToString('N'))
+try {
+    [void](New-Item -ItemType Directory -Path (Join-Path $sandboxHome '.config\opencode') -Force)
+    [void](New-Item -ItemType Directory -Path (Join-Path $sandboxHome '.codex') -Force)
+    $openPath = Join-Path $sandboxHome '.config\opencode\opencode.json'
+    $codexPath = Join-Path $sandboxHome '.codex\config.toml'
+    [System.IO.File]::WriteAllText($openPath, $origOpen, (New-Object System.Text.UTF8Encoding($false)))
+    [System.IO.File]::WriteAllText($codexPath, $origCodex, (New-Object System.Text.UTF8Encoding($false)))
+    $env:USERPROFILE = $sandboxHome
+    $swState = Join-Path $sandboxHome 'state'
+
+    $r1 = Set-LLMKitLocalSwitch -Target 'opencode' -ModelTag 'qwen3.5:9b' -AllTags @('qwen3.5:9b') -StateDir $swState -Apply
+    Assert-True ([bool]$r1.ok) 'opencode 切到本地成功'
+    Assert-True ([string]$r1.backup -ne '') '切换前留了备份'
+    $stOpen = Get-LLMKitLocalSwitchState -Target 'opencode'
+    Assert-True ([bool]$stOpen.applied) '读回来确认 opencode 已指向本地'
+    Assert-Equal 'qwen3.5:9b' ([string]$stOpen.model) '状态里读得到当前本地模型'
+
+    $r2 = Set-LLMKitLocalSwitch -Target 'codex' -ModelTag 'gemma4:26b' -StateDir $swState -Apply
+    Assert-True ([bool]$r2.ok) 'codex 切到本地成功'
+    Assert-True ([bool](Get-LLMKitLocalSwitchState -Target 'codex').applied) '读回来确认 codex 已指向本地'
+
+    $beforeTrial = [System.IO.File]::ReadAllText($openPath)
+    [void](Undo-LLMKitLocalSwitch -Target 'opencode' -StateDir $swState)
+    Assert-Equal $beforeTrial ([System.IO.File]::ReadAllText($openPath)) '演练撤销不改文件'
+
+    [void](Undo-LLMKitLocalSwitch -Target 'opencode' -StateDir $swState -Apply)
+    [void](Undo-LLMKitLocalSwitch -Target 'codex' -StateDir $swState -Apply)
+    Assert-Equal $origOpen ([System.IO.File]::ReadAllText($openPath)) 'opencode 切回后逐字节还原'
+    Assert-Equal $origCodex ([System.IO.File]::ReadAllText($codexPath)) 'codex 切回后逐字节还原'
+    Assert-True (-not (Get-LLMKitLocalSwitchState -Target 'opencode').applied) '还原后状态回到"不是本地"'
+    $swLog = Join-Path $swState 'local-switch.log'
+    Assert-True (Test-Path -LiteralPath $swLog) '切换有记账'
+    Assert-True (((Get-Content -LiteralPath $swLog -Encoding UTF8) -join ' ') -match '切回原样') '记账里记得切回'
+} finally {
+    $env:USERPROFILE = $realProfile
+    Remove-Item -LiteralPath $sandboxHome -Recurse -Force -ErrorAction SilentlyContinue
+}
 Write-Host ('-' * 60) -ForegroundColor DarkGray
 if ($script:Fail -eq 0) {
     Write-Host ('全部通过：' + $script:Pass + ' 项') -ForegroundColor Green

@@ -173,7 +173,7 @@ function ConvertTo-ActionSpecArgs {
     foreach ($opt in @('cleanArtifacts', 'removeUserConfig', 'skipOnboarding')) {
         if ($Body.PSObject.Properties.Name -contains $opt) { $specArgs[$opt] = [bool]$Body.$opt }
     }
-    foreach ($opt in @('tierId', 'providerId', 'authTokenEnvVar', 'proxy', 'model')) {
+    foreach ($opt in @('tierId', 'providerId', 'authTokenEnvVar', 'proxy', 'model', 'modelTag')) {
     # 工具范围：数组，不是字符串，所以单独处理
     if ($Body.PSObject.Properties.Name -contains 'toolIds') {
         $ids = @($Body.toolIds | Where-Object { $_ } | ForEach-Object { [string]$_ })

@@ -60,6 +60,14 @@
       return '<li>这一步会真的往磁盘写文件（几 GB），磁盘余量服务端已经算过，不够会直接拒绝。</li>' +
         '<li>下载过程会实时输出进度；结束后会回查一次「已装列表」，不是只看命令有没有报成功。</li>';
     }
+    if (actionId === 'tool-local-switch') {
+      return '<li>会改这个智能体自己的配置文件（只加/改本地那一个 provider 块，别的内容不动），写前整份备份。</li>' +
+        '<li>切回来用「切回原样」——按备份整份还原，连文件格式一起回去。</li>';
+    }
+    if (actionId === 'tool-local-switch-undo') {
+      return '<li>会用最近一次备份整份还原这个配置文件（不是只删本地那一段）。</li>' +
+        '<li>如果你在这之后又手动改过这个文件，这些改动也会被还原覆盖 —— 想保留就先自己备份。</li>';
+    }
     if (actionId === 'local-context') {
       return '<li>会改用户级环境变量 <b>OLLAMA_CONTEXT_LENGTH=32768</b>，并<b>重启一次 Ollama</b>（正在跑的任务会被中断）。</li>' +
         '<li>重启后会真的加载一个模型、读回生效值来验证；验证不过会<b>自动改回原值</b>并告诉你。</li>';
@@ -1553,12 +1561,34 @@
       // 接入矩阵：能直连的给路径，不能直连的说原因 —— 别让用户以为"所有工具都能用本地"
       var nameOf = {};
       ((S.overview && S.overview.tools) || []).forEach(function (t) { nameOf[t.id] = t.name; });
+      // 能自动切换的只有 OpenCode / Codex：其余只给片段（它们的配置嵌套太深，写坏风险高于收益）
+      var switchMap = {};
+      (d.switchTargets || []).forEach(function (s) { switchMap[s.id] = s; });
+      var localTags = (ol.models || []).map(function (m) { return m.name; });
       var endpointRows = (d.endpoints || []).map(function (e) {
         var yn = e.supported ? pill('能', 'ok') : pill('不能', 'fail');
         var how = e.supported
           ? ('改 ' + mono(maskUserPath(e.configPath || '它自己的设置')) + (e.measured ? '<div class="meta">' + esc(e.measured) + '</div>' : ''))
           : esc(e.reason || '');
-        return '<tr><td>' + esc(nameOf[e.id] || e.id) + '</td><td>' + yn + '</td><td>' + mono(e.protocol || '') + '</td><td>' + how + '</td></tr>';
+        var sw = switchMap[e.id];
+        var swCell;
+        if (sw) {
+          var opts = localTags.map(function (tg) {
+            return '<option value="' + esc(tg) + '"' + (sw.model === tg ? ' selected' : '') + '>' + esc(tg) + '</option>';
+          }).join('');
+          swCell = '<div class="acts">' +
+            (sw.applied ? pill('已指向本地', 'ok') : pill('当前在线', 'warn')) +
+            (opts
+              ? '<select id="swModel-' + esc(e.id) + '">' + opts + '</select>' +
+                '<button class="tiny" data-switch="local" data-target="' + esc(e.id) + '">切到本地</button>'
+              : '<span class="note">还没有本地模型可切</span>') +
+            (sw.applied ? '<button class="tiny" data-switch="undo" data-target="' + esc(e.id) + '">切回原样</button>' : '') +
+            '</div>' +
+            '<div class="meta">' + mono(maskUserPath(sw.configPath || '')) + (sw.exists ? '' : '（文件还不存在，会新建）') + '</div>';
+        } else {
+          swCell = '<span class="note">只给片段，不代写</span>';
+        }
+        return '<tr><td>' + esc(nameOf[e.id] || e.id) + '</td><td>' + yn + '</td><td>' + mono(e.protocol || '') + '</td><td>' + how + '</td><td>' + swCell + '</td></tr>';
       }).join('');
 
       // 每个档位一个动作：能跑就下、下过就删、跑不动就不给下载按钮。
@@ -1639,7 +1669,7 @@
 
         '<section><h2>接进各智能体</h2>' +
         '<div class="meta">本地端点就是 ' + mono('http://127.0.0.1:11434/v1') + '（OpenAI 兼容，没有 key）。能不能直连，取决于那个工具说不说 OpenAI 这套协议。</div>' +
-        '<table class="tbl"><thead><tr><th>工具</th><th>能直连</th><th>协议</th><th>怎么接</th></tr></thead><tbody>' + endpointRows + '</tbody></table>' +
+        '<table class="tbl"><thead><tr><th>工具</th><th>能直连</th><th>协议</th><th>怎么接</th><th>切换</th></tr></thead><tbody>' + endpointRows + '</tbody></table>' +
         '<div class="meta">除 Claude Code 外，本工具不代写这些配置 —— 它们是嵌套结构，盲写会把你已有的渠道配置搞坏。各工具自己的页面里给了可复制的片段。</div>' +
         '</section>' +
 
@@ -1740,6 +1770,17 @@
     }
     if (b.hasAttribute('data-restore')) {
       act('restore', { targetId: b.getAttribute('data-restore') });
+      return;
+    }
+    if (b.hasAttribute('data-switch')) {
+      var swTarget = b.getAttribute('data-target') || '';
+      var swMode = b.getAttribute('data-switch');
+      if (!swTarget) { return; }
+      if (swMode === 'undo') { act('tool-local-switch-undo', { targetId: swTarget }); return; }
+      var sel = document.getElementById('swModel-' + swTarget);
+      var tag = sel && sel.value ? String(sel.value) : '';
+      if (!tag) { toast('先选一个本地模型'); return; }
+      act('tool-local-switch', { targetId: swTarget, modelTag: tag });
       return;
     }
     if (b.hasAttribute('data-launch')) {

@@ -735,6 +735,34 @@ check('步骤状态跟着安装状态走', cl.indexOf('该你了') >= 0 || cl.in
   } else {
     check('（本机没有已下载的模型，跳过删除确认断言）', true);
   }
+  // --- 切换：只有 OpenCode / Codex 能自动写，其余明说"只给片段" ---
+  const swTargets = (locJson.switchTargets || []);
+  check('本地模型页给出可自动切换的目标', swTargets.length === 2, JSON.stringify(swTargets.map((s) => s.id)));
+  check('可切换的目标就是 opencode 与 codex', swTargets.map((s) => s.id).sort().join(',') === 'codex,opencode');
+  check('不支持自动切换的工具写明"只给片段"', localHtml.indexOf('只给片段，不代写') >= 0);
+  for (const s of swTargets) {
+    check(s.id + ' 行给出「切到本地」按钮', localHtml.indexOf('data-switch="local" data-target="' + s.id + '"') >= 0);
+    check(s.id + ' 行给出模型下拉', localHtml.indexOf('id="swModel-' + s.id + '"') >= 0);
+  }
+  const anyInstalled = (locJson.ollama.models || []).length > 0;
+  if (anyInstalled && swTargets.length > 0) {
+    const firstTag = locJson.ollama.models[0].name;
+    const selEl = el('swModel-opencode');
+    if (selEl) { selEl.value = firstTag; }
+    previewCalls.length = 0; runCalls.length = 0;
+    clickDocBtn({ 'data-switch': 'local', 'data-target': 'opencode' });
+    await wait('切换确认框弹出', () => el('modal').classList.contains('show'), 20000);
+    const pvSw = previewCalls[previewCalls.length - 1];
+    check('点「切到本地」先向服务端要命令', !!pvSw && pvSw.actionId === 'tool-local-switch' && pvSw.targetId === 'opencode', JSON.stringify(pvSw));
+    check('切换请求带上了选中的模型', !!pvSw && pvSw.modelTag === firstTag, pvSw ? pvSw.modelTag : '(无)');
+    check('确认框里是 -LocalSwitch 那条命令', el('modalBody').innerHTML.indexOf('-LocalSwitch') >= 0);
+    check('确认框说明会先整份备份', el('modalBody').innerHTML.indexOf('备份') >= 0);
+    el('modalCancel').onclick();
+    await new Promise((r) => setTimeout(r, 150));
+    check('取消后没有切配置', runCalls.length === 0);
+  } else {
+    check('（本机没有已装模型，跳过切换点击断言）', true);
+  }
   // --- 位置与上下文：模型在哪、上下文实际多少，都必须标出来 ---
   check('本地模型页标出 Ollama 安装位置', localHtml.indexOf('安装位置') >= 0);
   check('本地模型页标出模型目录', localHtml.indexOf('模型目录') >= 0);
