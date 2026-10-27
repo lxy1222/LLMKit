@@ -67,6 +67,8 @@ param(
     [string]$DiagnosticFile,
     [switch]$CopyDiagnostic,
     [string]$Restore,
+    [string]$ModelPull = '',
+    [string]$ModelRemove = '',
     [string]$Uninstall,
     [switch]$RemoveUserConfig,
     [switch]$CleanOnly,
@@ -96,6 +98,7 @@ Import-Module (Join-Path $scriptDir 'LLMKit.Install.psm1') -Force -DisableNameCh
 Import-Module (Join-Path $scriptDir 'LLMKit.Tools.psm1') -Force -DisableNameChecking
 Import-Module (Join-Path $scriptDir 'LLMKit.Config.psm1') -Force -DisableNameChecking
 Import-Module (Join-Path $scriptDir 'LLMKit.Diagnose.psm1') -Force -DisableNameChecking
+Import-Module (Join-Path $scriptDir 'LLMKit.Hardware.psm1') -Force -DisableNameChecking
 
 # powershell.exe -File 不会按逗号拆数组参数：-Only node,git 会原样变成单个字符串 "node,git"。
 # 用 cmd / powershell 调用脚本是最常见的用法，必须自己拆开，
@@ -132,6 +135,39 @@ if (-not [string]::IsNullOrEmpty($Restore)) {
     exit 0
 }
 
+# ---------------------------------------------------------------- 本地模型分支
+# 下载 / 删除本地模型。两者都要求 -Apply：命令行是可以被用户复制到终端重跑的，
+# 不带 -Apply 就是演练 —— 和其它动作同一套规矩，不例外。
+if (-not [string]::IsNullOrEmpty($ModelPull) -or -not [string]::IsNullOrEmpty($ModelRemove)) {
+    $isPull = -not [string]::IsNullOrEmpty($ModelPull)
+    $tag = if ($isPull) { $ModelPull } else { $ModelRemove }
+    Write-Line ''
+    Write-Line ('LLMKit · ' + $(if ($isPull) { '下载本地模型' } else { '删除本地模型' }) + '：' + $tag) 'White'
+    Write-Line ('模式：' + $(if ($Apply) { '执行（-Apply）' } else { '演练（DryRun，不会下载、不会删除）' })) $(if ($Apply) { 'Yellow' } else { 'Green' })
+    Write-Line ('-' * 72) 'DarkGray'
+    $onLine = { param($s) Write-Line ('  ' + $s) 'DarkGray' }
+    try {
+        if ($isPull) {
+            $plan = Get-LLMKitModelPullPlan -ConfigRoot $ConfigRoot -Tag $tag
+            Write-Line ('  模型：' + $plan.name + '（' + $plan.tag + '）') 'DarkGray'
+            Write-Line ('  体积约 ' + $plan.sizeGB + ' GB；含临时空间需要 ' + $plan.needDiskGB + ' GB；当前剩余 ' + $plan.diskFreeGB + ' GB') 'DarkGray'
+            Write-Line ('  下到：' + $plan.modelRoot) 'DarkGray'
+            if (-not $plan.ok) { Write-Line ('  ' + $plan.reason) 'Red'; exit 1 }
+            if (-not $Apply) { Write-Line ''; Write-Line '以上是演练结果。确认后加 -Apply 真正下载。' 'Yellow'; exit 0 }
+            $r = Invoke-LLMKitModelPull -ConfigRoot $ConfigRoot -Tag $tag -OnLine $onLine
+            Write-Line ('完成：' + $r.tag + ' 已在本地，约 ' + $r.sizeGB + ' GB') 'Green'
+        } else {
+            Write-Line '  这一步会真的删除模型文件（不搬备份），所以演练时不碰任何东西。' 'DarkGray'
+            if (-not $Apply) { Write-Line ''; Write-Line '以上是演练结果。确认后加 -Apply 真正删除。' 'Yellow'; exit 0 }
+            $r = Invoke-LLMKitModelRemove -Tag $tag -StateDir $StateDir -OnLine $onLine
+            Write-Line ('完成：已删除 ' + $r.tag + '，释放约 ' + $r.sizeGB + ' GB；清单记在 out\state\model-removals.log') 'Green'
+        }
+        exit 0
+    } catch {
+        Write-Line ('失败：' + $_.Exception.Message) 'Red'
+        exit 1
+    }
+}
 # ---------------------------------------------------------------- 只清理残留分支
 if ($CleanOnly) {
     Write-Line ''

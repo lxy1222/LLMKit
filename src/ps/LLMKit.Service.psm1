@@ -95,6 +95,16 @@ function Get-LLMKitActionCatalog {
                 options = @('provider', 'authTokenEnvVar', 'skipOnboarding', 'toolIds', 'model')
             })
         [pscustomobject]([ordered]@{
+                id = 'model-pull'; label = '下载本地模型'; scope = 'global'; destructive = $true
+                desc = '把一个本地模型下到你的机器上（3–18 GB，占磁盘）；拼命令前就先做一次空间预检'
+                options = @('modelTag')
+            })
+        [pscustomobject]([ordered]@{
+                id = 'model-remove'; label = '删除本地模型'; scope = 'global'; destructive = $true
+                desc = '删掉本地模型文件（这一步会真删，不搬备份）；删前记账，可用 ollama pull 装回来'
+                options = @('modelTag')
+            })
+        [pscustomobject]([ordered]@{
                 id = 'diagnose'; label = '生成诊断报告'; scope = 'global'; destructive = $false
                 desc = '只读：汇总环境与安装情况，自动脱敏后复制到剪贴板'
             })
@@ -137,6 +147,9 @@ function Get-LLMKitActionCommandLine {
     $action = Get-LLMKitAction -ActionId $ActionId
     if ($action.scope -ne 'global' -and [string]::IsNullOrEmpty($TargetId)) {
         throw ('动作 ' + $ActionId + ' 需要指定 TargetId。')
+    }    # 模型动作的 TargetId 是模型 tag（不是工具 id），所以上面那条 global 豁免不适用它们
+    if (@('model-pull', 'model-remove') -contains $ActionId -and [string]::IsNullOrWhiteSpace($TargetId)) {
+        throw ('动作 ' + $ActionId + ' 需要指定模型 tag。')
     }
 
     $a = New-Object System.Collections.ArrayList
@@ -194,6 +207,15 @@ function Get-LLMKitActionCommandLine {
         'diagnose' {
             & $add '-SkipCheck'; & $add '-SkipDeps'; & $add '-Diagnose'; & $add '-CopyDiagnostic'
             if ($ProviderId) { & $add '-Configure'; & $add $ProviderId }
+        }
+        'model-pull' {
+            # 预检放在拼命令之前：空间不够就别让用户点了确认再失败
+            $plan = Get-LLMKitModelPullPlan -ConfigRoot $ConfigRoot -Tag $TargetId
+            if (-not $plan.ok) { throw $plan.reason }
+            & $add '-ModelPull'; & $add $TargetId
+        }
+        'model-remove' {
+            & $add '-ModelRemove'; & $add $TargetId
         }
         'restore' {
             & $add '-Restore'; & $add $TargetId

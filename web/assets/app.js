@@ -53,6 +53,21 @@
     return { id: id, label: id, desc: '', destructive: true };
   }
 
+  // 确认框里的说明必须按动作说实话：本地模型的删除是**真删**（不搬备份），
+  // 照搬"只搬不删、可一键还原"那套说法就是在骗人 —— 磁盘上那几个 GB 已经没了。
+  function confirmBullets(actionId) {
+    if (actionId === 'model-pull') {
+      return '<li>这一步会真的往磁盘写文件（几 GB），磁盘余量服务端已经算过，不够会直接拒绝。</li>' +
+        '<li>下载过程会实时输出进度；结束后会回查一次「已装列表」，不是只看命令有没有报成功。</li>';
+    }
+    if (actionId === 'model-remove') {
+      return '<li>这一步会真的删掉模型文件，<b>不会</b>挪到备份区 —— 一个模型几 GB，搬备份很可能把磁盘撑爆。</li>' +
+        '<li>删了什么、多大、怎么装回来，会记在 out\\state\\model-removals.log；要恢复就是重新下载。</li>';
+    }
+    return '<li>被替换或移除的东西会先挪到备份区（只搬不删），并按会话写进日志。</li>' +
+      '<li>事后可以在下面的日志里看到全过程，也可以按日志一键还原。</li>';
+  }
+
   // ---------------------------------------------------------------- 接口
   function getJson(path) {
     return fetch(path, { cache: 'no-store' }).then(function (r) {
@@ -160,8 +175,7 @@
         var html = '<p>' + esc(desc) + '</p>' +
           '<ul>' +
           '<li>这一步会<b>真的改动这台电脑</b>。</li>' +
-          '<li>被替换或移除的东西会先挪到备份区（只搬不删），并按会话写进日志。</li>' +
-          '<li>事后可以在下面的日志里看到全过程，也可以按日志一键还原。</li>' +
+          confirmBullets(actionId) +
           '</ul>' +
           '<div class="cmd">' + esc(maskUserPath(p.commandLine)) + '</div>' +
           '<div class="note">这条就是即将执行的原文，你可以自己复制去命令行重跑。</div>' +
@@ -1478,7 +1492,23 @@
           esc(shortTime(m.modified)) + '</td></tr>';
       }).join('');
 
+      // 每个档位一个动作：能跑就下、下过就删、跑不动就不给下载按钮。
+      // 下载/删除都走 act() → /api/preview → 确认框 → /api/run，不新开任何安全通道。
       var modelCards = (d.models || []).map(function (m) {
+        var acts = '';
+        if (m.verdict === 'no') {
+          acts = '<div class="acts"><button disabled title="' + esc(m.verdictReason) + '">下载</button>' +
+            '<span class="note">这台机器跑不动这一档，所以不给下载按钮 —— 别白下 ' + esc(String(m.sizeGB)) + ' GB</span></div>';
+        } else if (m.downloaded) {
+          acts = '<div class="acts">' +
+            '<button data-act="model-remove" data-target="' + esc(m.ollamaTag) + '">删除（释放约 ' + esc(String(m.sizeGB)) + ' GB）</button>' +
+            '<span class="note">这一步会真的删文件；删完可以用 ollama pull 装回来，删了什么记在 out\\state\\model-removals.log</span></div>';
+        } else {
+          acts = '<div class="acts">' +
+            '<button class="primary" data-act="model-pull" data-target="' + esc(m.ollamaTag) + '">下载（约 ' + esc(String(m.sizeGB)) + ' GB）</button>' +
+            '<span class="note">' + (m.verdict === 'slow' ? '显存不够、会退到 CPU 跑，慢；' : '') +
+            '下载前会先算清占多大、磁盘够不够</span></div>';
+        }
         return '<div class="card">' +
           '<div class="acts" style="justify-content:space-between;align-items:center">' +
           '<h3 style="margin:0">' + esc(m.name) + '</h3>' +
@@ -1490,6 +1520,7 @@
           '<div class="meta">模型名：' + mono(m.ollamaTag) + ' <button class="tiny" data-copy="ollama pull ' + esc(m.ollamaTag) + '">复制拉取命令</button></div>' +
           '<div class="callout">' + esc(m.verdictReason) + '</div>' +
           '<div class="meta">' + esc(m.capabilityNote || '') + '</div>' +
+          acts +
           '</div>';
       }).join('');
 

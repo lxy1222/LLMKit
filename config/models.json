@@ -5,6 +5,22 @@
   "note": "本地模型目录。判定表里的 minVramGB / minRamGB 是「能跑起来」的门槛，不是推荐值。measured 段是本项目在 RTX 3080 10GB 上的真机实测，别拿厂商跑分替代它 —— 工具调用这一项实测过才知道，卡面上写着 tools 也不一定真会调。",
   "models": [
     {
+      "id": "qwen35-2b",
+      "name": "Qwen3.5 2B",
+      "vendor": "阿里通义",
+      "ollamaTag": "qwen3.5:2b",
+      "params": "2B",
+      "quant": "Q4_K_M",
+      "sizeGB": 2.9,
+      "minVramGB": 3,
+      "minRamGB": 8,
+      "context": 32768,
+      "tools": true,
+      "license": "Apache-2.0",
+      "capability": "chat-only",
+      "capabilityNote": "核显 / 8 GB 内存的笔记本兜底档：能跑起来、能问答与补全，工具调用不指望它。",
+      "sourceUrl": "https://ollama.com/library/qwen3.5/tags"
+    },    {
       "id": "qwen35-4b",
       "name": "Qwen3.5 4B",
       "vendor": "阿里通义",

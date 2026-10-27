@@ -428,7 +428,7 @@ foreach ($c in @(
 Write-Host '动作层（服务层）' -ForegroundColor Cyan
 # ======================================================================
 $actions = @(Get-LLMKitActionCatalog)
-Assert-True ($actions.Count -ge 8) ('动作清单至少 8 条（实际 ' + $actions.Count + '）')
+Assert-True ($actions.Count -ge 10) ('动作清单至少 10 条（实际 ' + $actions.Count + '）')
 Assert-Equal $actions.Count (@($actions | ForEach-Object { $_.id } | Sort-Object -Unique).Count) '动作 id 无重复'
 Assert-Equal 0 (@($actions | Where-Object { [string]::IsNullOrEmpty($_.label) -or [string]::IsNullOrEmpty($_.desc) -or [string]::IsNullOrEmpty($_.scope) }).Count) '每条动作都有 label / desc / scope'
 Assert-Equal 0 (@($actions | Where-Object { @('global', 'tool', 'session') -notcontains $_.scope }).Count) 'scope 取值合法'
@@ -441,6 +441,8 @@ foreach ($a in $actions) {
     $tgt = ''
     if ($a.scope -eq 'tool') { $tgt = 'opencode' }
     elseif ($a.scope -eq 'session') { $tgt = 'out\state\sessions\example.json' }
+    # 模型动作的 TargetId 是模型 tag（不是工具 id）；不补一个的话它会被"必须给 tag"的校验拦下
+    elseif (@('model-pull', 'model-remove') -contains $a.id) { $tgt = 'qwen3.5:2b' }
     $dry = Get-LLMKitActionCommandLine -ActionId $a.id -ConfigRoot $svcRoot -TargetId $tgt
     $real = Get-LLMKitActionCommandLine -ActionId $a.id -ConfigRoot $svcRoot -TargetId $tgt -Apply
     Assert-True ($dry.arguments -notcontains '-Apply') ('演练模式 ' + $a.id + ' 绝不带 -Apply')
@@ -774,6 +776,58 @@ $olSteps = @(Get-ObjectProp -Object (Get-ObjectProp -Object $ollamaTool -Name 'g
 $olSections = @($olSteps | ForEach-Object { [string](Get-ObjectProp -Object $_ -Name 'section') })
 Assert-True ($olSections -contains 'install') 'ollama 的分段里有安装'
 Assert-True ($olSections -contains 'launch') 'ollama 的分段里有启动'
+# ======================================================================
+Write-Host ''
+Write-Host '本地模型动作：下载 / 删除（都要过 preview 与 -Apply 门禁）' -ForegroundColor Cyan
+# ======================================================================
+# 这两条动作的性质和前八个不同：pull 是下载几 GB、remove 是**真删**（不搬备份）。
+# 所以钉三件事：清单里标了 destructive、不带 -Apply 绝不出现 -Apply、
+# 以及"没给模型 tag 就不许跑"。
+$mp = @($actions | Where-Object { $_.id -eq 'model-pull' })
+$mr = @($actions | Where-Object { $_.id -eq 'model-remove' })
+Assert-Equal 1 $mp.Count '清单里有「下载本地模型」'
+Assert-Equal 1 $mr.Count '清单里有「删除本地模型」'
+Assert-True ([bool]$mp[0].destructive) '下载模型被标为会改动系统'
+Assert-True ([bool]$mr[0].destructive) '删除模型被标为会改动系统'
+Assert-True ((@($mp[0].options) -contains 'modelTag')) '下载模型声明了 modelTag 选项'
+Assert-True ((@($mr[0].options) -contains 'modelTag')) '删除模型声明了 modelTag 选项'
+
+# 演练（不给 Apply）绝不带 -Apply；给了 Apply 才带
+$dry = Get-LLMKitActionCommandLine -ActionId 'model-pull' -ConfigRoot $projectRoot -TargetId 'qwen3.5:2b'
+Assert-True (-not (@($dry.arguments) -contains '-Apply')) '演练模式的 model-pull 不带 -Apply'
+Assert-True (@($dry.arguments) -contains '-ModelPull') '命令里有 -ModelPull'
+Assert-True (@($dry.arguments) -contains 'qwen3.5:2b') '命令里带上了模型 tag'
+$real = Get-LLMKitActionCommandLine -ActionId 'model-pull' -ConfigRoot $projectRoot -TargetId 'qwen3.5:2b' -Apply
+Assert-True (@($real.arguments) -contains '-Apply') '执行模式的 model-pull 才带 -Apply'
+Assert-True ([bool]$real.willApply) '执行模式 willApply=true'
+$dryRm = Get-LLMKitActionCommandLine -ActionId 'model-remove' -ConfigRoot $projectRoot -TargetId 'qwen3.5:2b'
+Assert-True (-not (@($dryRm.arguments) -contains '-Apply')) '演练模式的 model-remove 不带 -Apply'
+Assert-True (@($dryRm.arguments) -contains '-ModelRemove') '命令里有 -ModelRemove'
+$realRm = Get-LLMKitActionCommandLine -ActionId 'model-remove' -ConfigRoot $projectRoot -TargetId 'qwen3.5:2b' -Apply
+Assert-True (@($realRm.arguments) -contains '-Apply') '执行模式的 model-remove 才带 -Apply'
+
+# 没有 tag 就不许跑（否则会拼出一条没有参数的下载命令，跑起来才发现）
+$threw = $false
+try { [void](Get-LLMKitActionCommandLine -ActionId 'model-pull' -ConfigRoot $projectRoot) } catch { $threw = $true }
+Assert-True $threw 'model-pull 没给 tag 时直接报错'
+
+# 下载计划：体积 / 需要的磁盘（1.5 倍）/ 下到哪
+$plan = Get-LLMKitModelPullPlan -ConfigRoot $projectRoot -Tag 'qwen3.5:2b'
+Assert-Equal 'qwen3.5:2b' $plan.tag '计划的 tag 正确'
+Assert-True ($plan.sizeGB -gt 0) '计划里有体积'
+Assert-True ($plan.needDiskGB -ge $plan.sizeGB) '需要的磁盘空间不小于体积（含临时空间）'
+Assert-True ($plan.modelRoot.Length -gt 0) '计划里有模型目录'
+Assert-True ($plan.ok) '本机磁盘够（不然这条用例该换机器跑）'
+$threw2 = $false
+try { [void](Get-LLMKitModelPullPlan -ConfigRoot $projectRoot -Tag 'no-such-model:0b') } catch { $threw2 = $true }
+Assert-True $threw2 '目录里没有的 tag 会被拒绝（不让它瞎下）'
+
+# 磁盘判定是纯计算：这里直接喂"只剩 5 GB"，判 4.4 GB 门槛要过、判 18 GB 门槛要拒
+$blk = Get-LLMKitDiskGate -SizeGB 2.9 -DiskFreeGB 5.0 -ModelRoot 'F:\m'
+Assert-True ([bool]$blk.ok) '剩 5 GB 下 2.9 GB（要 4.4 GB）→ 允许'
+$blk2 = Get-LLMKitDiskGate -SizeGB 18 -DiskFreeGB 5.0 -ModelRoot 'F:\m'
+Assert-True (-not [bool]$blk2.ok) '剩 5 GB 下 18 GB（要 27 GB）→ 拒绝'
+Assert-True ([string]$blk2.reason -match '磁盘不够') '拒绝时说的是磁盘不够，不是说别的'
 Write-Host ('-' * 60) -ForegroundColor DarkGray
 if ($script:Fail -eq 0) {
     Write-Host ('全部通过：' + $script:Pass + ' 项') -ForegroundColor Green

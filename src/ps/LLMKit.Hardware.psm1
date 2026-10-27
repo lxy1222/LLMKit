@@ -273,6 +273,289 @@ function Get-LLMKitOllamaStatus {
     }
 }
 
+function Resolve-LLMKitOllamaExe {
+    <#
+        Ollama 可执行文件位置。官方安装器装在 %LOCALAPPDATA%\Programs\Ollama，不需要管理员。
+    #>
+    foreach ($c in @((Join-Path $env:LOCALAPPDATA 'Programs\Ollama\ollama.exe'), (Join-Path $env:ProgramFiles 'Ollama\ollama.exe'))) {
+        if ($c -and (Test-Path -LiteralPath $c)) { return $c }
+    }
+    $cmd = Get-Command ollama -ErrorAction SilentlyContinue
+    if ($cmd) { return $cmd.Source }
+    return ''
+}
+
+function Get-LLMKitDiskGate {
+    <#
+        纯计算：这么大的模型，这点磁盘余量够不够。不探测、不 IO，便于单测。
+        按 1.5 倍算 —— 下载中的临时分片、换量化重下都会并存，
+        按 1 倍算的话"刚好够"的用户一定会下到一半失败。
+    #>
+    param(
+        [Parameter(Mandatory = $true)][double]$SizeGB,
+        [Parameter(Mandatory = $true)][double]$DiskFreeGB,
+        [string]$ModelRoot = ''
+    )
+
+    $needDiskGB = [math]::Round($SizeGB * 1.5, 1)
+    $ok = $true
+    $reason = ''
+    if ($DiskFreeGB -gt 0 -and $DiskFreeGB -lt $needDiskGB) {
+        $ok = $false
+        $place = if ([string]::IsNullOrWhiteSpace($ModelRoot)) { '模型目录' } else { $ModelRoot }
+        $reason = ('磁盘不够：需要约 ' + $needDiskGB + ' GB（含临时空间），' + $place + ' 所在盘只剩 ' + $DiskFreeGB + ' GB，还差 ' + [math]::Round($needDiskGB - $DiskFreeGB, 1) + ' GB')
+    }
+    return [pscustomobject]@{ ok = $ok; needDiskGB = $needDiskGB; reason = $reason }
+}
+function Get-LLMKitModelPullPlan {
+    <#
+        纯计算：这个模型要下多大、下到哪、磁盘够不够。不联网、不写盘。
+        空间按 1.5 倍算 —— 下载过程中的临时分片、换个量化重下都会并存，
+        按 1 倍算的话"刚好够"的用户一定会下一半失败。
+    #>
+    param(
+        [Parameter(Mandatory = $true)][string]$ConfigRoot,
+        [Parameter(Mandatory = $true)][string]$Tag
+    )
+
+    $catalog = @(Get-LLMKitModelCatalog -ConfigRoot $ConfigRoot)
+    $hit = @($catalog | Where-Object { [string](Get-ObjectPropSafe $_ 'ollamaTag') -eq $Tag })
+    if ($hit.Count -eq 0) { throw ('模型目录里没有这个模型：' + $Tag) }
+    $m = $hit[0]
+
+    $sizeGB = [double]$m.sizeGB
+    $modelRoot = Get-LLMKitOllamaModelRoot
+    $diskFreeGB = Get-LLMKitDiskFreeGB -Path $modelRoot
+    $gate = Get-LLMKitDiskGate -SizeGB $sizeGB -DiskFreeGB $diskFreeGB -ModelRoot $modelRoot
+    $needDiskGB = $gate.needDiskGB
+    $ok = $gate.ok
+    $reason = $gate.reason
+
+    return [pscustomobject]@{
+        tag         = $Tag
+        name        = [string]$m.name
+        sizeGB      = $sizeGB
+        needDiskGB  = $needDiskGB
+        diskFreeGB  = $diskFreeGB
+        modelRoot   = $modelRoot
+        ok          = $ok
+        reason      = $reason
+    }
+}
+
+function Get-ObjectPropSafe {
+    param($Object, [string]$Name)
+    if ($null -eq $Object) { return $null }
+    $p = $Object.PSObject.Properties[$Name]
+    if ($p) { return $p.Value }
+    return $null
+}
+
+function Test-LLMKitOllamaRunning {
+    try {
+        [void](Invoke-RestMethod -Uri 'http://127.0.0.1:11434/api/version' -TimeoutSec 2 -ErrorAction Stop)
+        return $true
+    } catch { return $false }
+}
+
+function Invoke-LLMKitOllamaNdjson {
+    <#
+        调 Ollama 的流式接口（/api/pull 会一行一行吐进度），把每一行交给回调。
+        为什么不用 ollama.exe pull：它把进度写成 \r 刷新的 ANSI 序列，
+        重定向到文件后是一坨控制字符；HTTP 这边每行是干净的 JSON，进度能算准。
+    #>
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)]$Body,
+        [scriptblock]$OnLine
+    )
+
+    if (-not (Test-LLMKitOllamaRunning)) {
+        throw 'Ollama 服务没在跑。先启动 Ollama（托盘图标），再来下载模型。'
+    }
+
+    $bytes = [System.Text.Encoding]::UTF8.GetBytes(($Body | ConvertTo-Json -Depth 6 -Compress))
+    $req = [System.Net.HttpWebRequest]::Create('http://127.0.0.1:11434' + $Path)
+    $req.Method = 'POST'
+    $req.ContentType = 'application/json'
+    $req.ContentLength = $bytes.Length
+    $req.Timeout = 60000
+    $req.ReadWriteTimeout = 60000
+    $rs = $req.GetRequestStream()
+    $rs.Write($bytes, 0, $bytes.Length)
+    $rs.Dispose()
+
+    $resp = $null
+    try {
+        $resp = $req.GetResponse()
+    } catch [System.Net.WebException] {
+        $detail = ''
+        try {
+            $er = $_.Exception.Response
+            if ($er) {
+                $rd = New-Object System.IO.StreamReader($er.GetResponseStream(), [System.Text.Encoding]::UTF8)
+                $detail = $rd.ReadToEnd()
+                $rd.Dispose()
+            }
+        } catch { }
+        if ([string]::IsNullOrWhiteSpace($detail)) { throw $_.Exception.Message }
+        try {
+            $o = $detail | ConvertFrom-Json
+            if ($o.error) { throw ('Ollama 报错：' + [string]$o.error) }
+        } catch [System.Management.Automation.RuntimeException] {
+            throw ('Ollama 报错：' + $detail)
+        }
+        throw ('Ollama 报错：' + $detail)
+    }
+
+    # 分块读 + 读超时，而不是 StreamReader.ReadLine：
+    # 实测踩过 —— 下载到 100% 之后 Ollama 还要算 sha256、写 manifest（几分钟），
+    # 那段期间它不发任何数据也不关连接，ReadLine 会一直阻塞，界面上看起来就"卡住了"。
+    # 这里把"一段时间没数据"当成收尾信号，交给调用方去回查真实状态。
+    $stream = $resp.GetResponseStream()
+    try { $stream.ReadTimeout = 30000 } catch { }
+    $buf = New-Object byte[] 16384
+    $pending = New-Object System.Collections.Generic.List[byte]
+    try {
+        while ($true) {
+            $read = 0
+            try { $read = $stream.Read($buf, 0, $buf.Length) } catch { break }
+            if ($read -le 0) { break }
+            for ($i = 0; $i -lt $read; $i++) { $pending.Add($buf[$i]) }
+
+            # 只处理"到换行为止"的完整行：这样按 UTF-8 解码不会切到半个汉字
+            $lastNl = -1
+            for ($i = $pending.Count - 1; $i -ge 0; $i--) { if ($pending[$i] -eq 10) { $lastNl = $i; break } }
+            if ($lastNl -lt 0) { continue }
+            $chunk = New-Object byte[] ($lastNl + 1)
+            $pending.CopyTo(0, $chunk, 0, $lastNl + 1)
+            $pending.RemoveRange(0, $lastNl + 1)
+            $text = [System.Text.Encoding]::UTF8.GetString($chunk)
+            foreach ($line in ($text -split "`n")) {
+                if ([string]::IsNullOrWhiteSpace($line)) { continue }
+                $obj = $null
+                try { $obj = $line | ConvertFrom-Json } catch { continue }
+                if ($obj.PSObject.Properties['error'] -and $obj.error) { throw ('Ollama 报错：' + [string]$obj.error) }
+                if ($OnLine) { & $OnLine $obj }
+            }
+        }
+    } finally {
+        try { $stream.Dispose() } catch { }
+        if ($resp) { $resp.Dispose() }
+    }
+}
+
+function Invoke-LLMKitModelPull {
+    <#
+        下载一个模型。进度按 10% 报一行，最后再核对一次"目录里真的有它"。
+        反正在下载前再做一次空间预检 —— 服务层那次是给界面看的，这次是给自己兜底：
+        命令可以被用户手动复制去跑，中途换了盘也不该把磁盘撑爆。
+    #>
+    param(
+        [Parameter(Mandatory = $true)][string]$ConfigRoot,
+        [Parameter(Mandatory = $true)][string]$Tag,
+        [scriptblock]$OnLine
+    )
+
+    $plan = Get-LLMKitModelPullPlan -ConfigRoot $ConfigRoot -Tag $Tag
+    if (-not $plan.ok) { throw $plan.reason }
+    if ($OnLine) {
+        & $OnLine ('准备下载 ' + $plan.name + '（' + $plan.tag + '）：约 ' + $plan.sizeGB + ' GB，磁盘需要 ' + $plan.needDiskGB + ' GB，当前剩 ' + $plan.diskFreeGB + ' GB')
+    }
+
+    # 回调必须走 $script: —— PowerShell 的 scriptblock 是**动态作用域**：
+    # 在外层函数里定义的 $OnLine，到了模块函数里执行时按调用方作用域找，找不到就静默变 $null，
+    # 于是"下载在跑、进度一行不出"。第一次实现就踩了这个坑（Ollama 日志里在下载，界面上什么都没）。
+    $script:pullEmit = $OnLine
+    $cb = {
+        param($o)
+        $status = [string](Get-ObjectPropSafe $o 'status')
+        $total = Get-ObjectPropSafe $o 'total'
+        $completed = Get-ObjectPropSafe $o 'completed'
+        if ($null -ne $total -and [double]$total -gt 0) {
+            $pct = [int]([double]$completed * 100 / [double]$total)
+            $bucket = [int]([math]::Floor($pct / 10) * 10)
+            if ($bucket -ne $script:pullBucket) {
+                $script:pullBucket = $bucket
+                $gbDone = [math]::Round([double]$completed / 1GB, 2)
+                $gbAll = [math]::Round([double]$total / 1GB, 2)
+                if ($script:pullEmit) { & $script:pullEmit ('  ' + $status + '：' + $pct + '%（' + $gbDone + '/' + $gbAll + ' GB）') }
+            }
+        } elseif ($status) {
+            if ($script:pullEmit) { & $script:pullEmit ('  ' + $status) }
+        }
+        if ($status -eq 'success') { $script:pullSuccess = $true }
+    }
+
+    $script:pullBucket = -100
+    $script:pullSuccess = $false
+    Invoke-LLMKitOllamaNdjson -Path '/api/pull' -Body @{ model = $Tag; stream = $true } -OnLine $cb
+
+    # 不信任"接口说成功了"：回查已装列表。
+    # 但要**轮询**等：Ollama 下完数据后还要算 sha256、写 manifest（实测要几分钟），
+    # 这段时间里模型还不在列表里 —— 一次性回查会把它误判成下载失败。
+    $present = $false
+    $deadline = (Get-Date).AddSeconds(300)
+    $waited = 0
+    while ((Get-Date) -lt $deadline) {
+        $status = Get-LLMKitOllamaStatus
+        if (@($status.models | Where-Object { [string]$_.name -eq $Tag }).Count -gt 0) { $present = $true; break }
+        if ($waited -eq 0 -and $script:pullEmit) { & $script:pullEmit '  下载数据已到齐，等 Ollama 算校验和写清单（可能要几分钟）' }
+        $waited++
+        Start-Sleep -Seconds 3
+    }
+    if (-not $present) { throw ('下载数据收完了，但 5 分钟内都没在已装列表里看到 ' + $Tag + '；请到 Ollama 里看一眼，或重试一次') }
+    if ($OnLine) { & $OnLine ('已装好：' + $Tag) }
+    return [pscustomobject]@{ tag = $Tag; sizeGB = $plan.sizeGB; verified = $true }
+}
+
+function Invoke-LLMKitModelRemove {
+    <#
+        删除一个本地模型。**这一步会真的删文件**（用户已确认过这条规则）：
+        删除前把"删了什么、多大、怎么装回来"写进清单，删完再核对一次确实没了。
+
+        为什么不像别的动作那样"只搬不删"：一个模型 3–18 GB，
+        搬到备份区很可能直接把磁盘撑爆 —— 那不叫安全，叫另一种事故。
+        所以这里的安全性来自"可重下 + 有账可查"，而不是"文件还在"。
+    #>
+    param(
+        [Parameter(Mandatory = $true)][string]$Tag,
+        [string]$StateDir = '',
+        [scriptblock]$OnLine
+    )
+
+    if (-not (Test-LLMKitOllamaRunning)) { throw 'Ollama 服务没在跑，无法删除模型。先启动 Ollama。' }
+
+    $before = Get-LLMKitOllamaStatus
+    $hit = @($before.models | Where-Object { [string]$_.name -eq $Tag })
+    if ($hit.Count -eq 0) { throw ('没有装这个模型：' + $Tag) }
+    $sizeGB = [double]$hit[0].sizeGB
+
+    if ($OnLine) { & $OnLine ('准备删除 ' + $Tag + '（' + $sizeGB + ' GB）；删完可以用 ollama pull ' + $Tag + ' 重新装回来') }
+
+    $bytes = [System.Text.Encoding]::UTF8.GetBytes((@{ model = $Tag } | ConvertTo-Json -Compress))
+    try {
+        [void](Invoke-WebRequest -Uri 'http://127.0.0.1:11434/api/delete' -Method Delete -Body $bytes -ContentType 'application/json' -UseBasicParsing -TimeoutSec 120)
+    } catch {
+        throw ('删除失败：' + $_.Exception.Message)
+    }
+
+    $after = Get-LLMKitOllamaStatus
+    $still = @($after.models | Where-Object { [string]$_.name -eq $Tag }).Count -gt 0
+    if ($still) { throw ('删了但列表里还有 ' + $Tag + '，请到 Ollama 里手动确认') }
+
+    # 记账：没有备份，但有据可查、可重下
+    if (-not [string]::IsNullOrWhiteSpace($StateDir)) {
+        try {
+            if (-not (Test-Path -LiteralPath $StateDir)) { [void](New-Item -ItemType Directory -Path $StateDir -Force) }
+            $line = (Get-Date).ToString('yyyy-MM-dd HH:mm:ss') + "  已删除模型 " + $Tag + "（" + $sizeGB + " GB）；恢复：ollama pull " + $Tag
+            Add-Content -LiteralPath (Join-Path $StateDir 'model-removals.log') -Value $line -Encoding UTF8
+        } catch { }
+    }
+
+    if ($OnLine) { & $OnLine ('已删除 ' + $Tag + '，释放约 ' + $sizeGB + ' GB') }
+    return [pscustomobject]@{ tag = $Tag; sizeGB = $sizeGB; verified = $true }
+}
 Export-ModuleMember -Function `
     'Get-LLMKitHardware', 'Get-LLMKitModelVerdict', 'Get-LLMKitModelCatalog', `
-    'Get-LLMKitOllamaStatus', 'Get-LLMKitOllamaModelRoot', 'Get-LLMKitDiskFreeGB'
+    'Get-LLMKitOllamaStatus', 'Get-LLMKitOllamaModelRoot', 'Get-LLMKitDiskFreeGB', 'Get-LLMKitModelPullPlan', 'Invoke-LLMKitModelPull', 'Invoke-LLMKitModelRemove', 'Resolve-LLMKitOllamaExe', 'Test-LLMKitOllamaRunning', 'Get-LLMKitDiskGate'

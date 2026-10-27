@@ -685,6 +685,56 @@ check('步骤状态跟着安装状态走', cl.indexOf('该你了') >= 0 || cl.in
   check('本地模型页没有 key / 写入入口', !reg.has('cfgEnv-ollama') && !reg.has('cfgWrite-ollama'));
   check('本地模型页标注 Claude Code 连不了本地', localHtml.indexOf('Claude Code 暂时连不了本地') >= 0);
   check('顶栏有「本地模型」入口', el('nav').innerHTML.indexOf('#/local') >= 0);
+  // --- 本地模型的下载 / 删除按钮：数量与状态逐档对照，点下去必须先拿到服务端命令 ---
+  const locJson = await (await fetch(BASE + '/api/local')).json();
+  const locModels = locJson.models || [];
+  const dlBtns = (localHtml.match(/data-act="model-pull"/g) || []).length;
+  const rmBtns = (localHtml.match(/data-act="model-remove"/g) || []).length;
+  const expectDl = locModels.filter((m) => !m.downloaded && m.verdict !== 'no').length;
+  const expectRm = locModels.filter((m) => m.downloaded).length;
+  check('「下载」按钮数 = 没下且跑得动的档数', dlBtns === expectDl, '按钮 ' + dlBtns + ' / 应为 ' + expectDl);
+  check('「删除」按钮数 = 已下载的档数', rmBtns === expectRm, '按钮 ' + rmBtns + ' / 应为 ' + expectRm);
+  const noVerdictModels = locModels.filter((m) => m.verdict === 'no');
+  if (noVerdictModels.length) {
+    check('跑不动的那档不给下载按钮（别白下十几 GB）',
+      noVerdictModels.every((m) => localHtml.indexOf('data-act="model-pull" data-target="' + m.ollamaTag + '"') < 0));
+  } else {
+    check('（本机每档都跑得动，跳过"跑不动不给下载"断言）', true);
+  }
+
+  const dlModel = locModels.filter((m) => !m.downloaded && m.verdict !== 'no')[0];
+  const rmModel = locModels.filter((m) => m.downloaded)[0];
+  blockRun = true;
+  if (dlModel) {
+    previewCalls.length = 0; runCalls.length = 0;
+    clickDocBtn({ 'data-act': 'model-pull', 'data-target': dlModel.ollamaTag });
+    await wait('下载确认框弹出', () => el('modal').classList.contains('show'), 20000);
+    const pvDl = previewCalls[previewCalls.length - 1];
+    check('点下载先向服务端要命令', !!pvDl && pvDl.actionId === 'model-pull' && pvDl.targetId === dlModel.ollamaTag, JSON.stringify(pvDl));
+    check('下载确认框里是 -ModelPull 那条命令', el('modalBody').innerHTML.indexOf('-ModelPull') >= 0);
+    check('下载确认框说明了会真的往磁盘写文件', el('modalBody').innerHTML.indexOf('真的往磁盘写文件') >= 0);
+    check('下载确认框没有套用"只搬不删"那套说法', el('modalBody').innerHTML.indexOf('只搬不删') < 0);
+    el('modalCancel').onclick();
+    await new Promise((r) => setTimeout(r, 150));
+    check('取消后没有下载', runCalls.length === 0);
+  } else {
+    check('（本机没有可下载的档，跳过下载确认断言）', true);
+  }
+
+  if (rmModel) {
+    previewCalls.length = 0; runCalls.length = 0;
+    clickDocBtn({ 'data-act': 'model-remove', 'data-target': rmModel.ollamaTag });
+    await wait('删除确认框弹出', () => el('modal').classList.contains('show'), 20000);
+    const pvRm = previewCalls[previewCalls.length - 1];
+    check('点删除先向服务端要命令', !!pvRm && pvRm.actionId === 'model-remove' && pvRm.targetId === rmModel.ollamaTag, JSON.stringify(pvRm));
+    check('删除确认框明确不是"只搬不删"', el('modalBody').innerHTML.indexOf('不会') >= 0 && el('modalBody').innerHTML.indexOf('备份') >= 0);
+    check('删除确认框提到记账与重下', el('modalBody').innerHTML.indexOf('model-removals.log') >= 0);
+    el('modalCancel').onclick();
+    await new Promise((r) => setTimeout(r, 150));
+    check('取消后没有删除', runCalls.length === 0);
+  } else {
+    check('（本机没有已下载的模型，跳过删除确认断言）', true);
+  }
   console.log('启动区');
   setHash('#/tool/opencode');
   await wait('opencode 工具页（启动）', () => el('app').innerHTML.indexOf('怎么启动、怎么用') >= 0);
