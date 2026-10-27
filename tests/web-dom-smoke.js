@@ -746,7 +746,9 @@ check('步骤状态跟着安装状态走', cl.indexOf('该你了') >= 0 || cl.in
   }
   const anyInstalled = (locJson.ollama.models || []).length > 0;
   if (anyInstalled && swTargets.length > 0) {
-    const firstTag = locJson.ollama.models[0].name;
+    // 下拉里现在只列"目录里已下载"的档，所以这里也按同一口径取第一个
+    var firstTag = (locJson.models || []).filter(function (m) { return m.downloaded; }).map(function (m) { return m.ollamaTag; })[0];
+    if (!firstTag) { firstTag = locJson.ollama.models[0].name; }
     const selEl = el('swModel-opencode');
     if (selEl) { selEl.value = firstTag; }
     previewCalls.length = 0; runCalls.length = 0;

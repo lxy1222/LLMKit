@@ -1564,7 +1564,10 @@
       // 能自动切换的只有 OpenCode / Codex：其余只给片段（它们的配置嵌套太深，写坏风险高于收益）
       var switchMap = {};
       (d.switchTargets || []).forEach(function (s) { switchMap[s.id] = s; });
-      var localTags = (ol.models || []).map(function (m) { return m.name; });
+      // 只列"目录里已下载"的档：nomic-embed-text 这种嵌入模型不会被当聊天模型用，
+      // deepseek-r1:7b 实测也不会返回结构化工具调用 —— 让它们出现在下拉里是误导。
+      var localTags = (d.models || []).filter(function (x) { return x.downloaded; }).map(function (x) { return x.ollamaTag; });
+      if (!localTags.length) { localTags = (ol.models || []).map(function (m) { return m.name; }); }
       var endpointRows = (d.endpoints || []).map(function (e) {
         var yn = e.supported ? pill('能', 'ok') : pill('不能', 'fail');
         var how = e.supported
