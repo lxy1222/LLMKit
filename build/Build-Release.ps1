@@ -62,7 +62,7 @@ $required = @(
     'src\ps\LLMKit.Config.psm1', 'src\ps\LLMKit.Diagnose.psm1',
     'src\ps\LLMKit.Service.psm1', 'src\ps\LLMKit.Web.psm1', 'src\ps\LLMKit.Hardware.psm1',
     'src\ps\Start-LLMKitWeb.ps1', 'web\index.html',
-    'config\tools.json', 'config\dependencies.json', 'config\providers.json', 'config\errormap.json', 'config\models.json'
+    'config\tools.json', 'config\dependencies.json', 'config\providers.json', 'config\errormap.json', 'config\models.json', 'config\local-endpoints.json'
 )
 $missing = @($required | Where-Object { -not (Test-Path -LiteralPath (Join-Path $projectRoot $_)) })
 if ($missing.Count -gt 0) {

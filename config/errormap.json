@@ -88,6 +88,62 @@
       ]
     },
     {
+      "id": "local-service-down",
+      "priority": 173,
+      "category": "本地模型",
+      "severity": "fail",
+      "title": "本地模型服务没在跑",
+      "match": { "textPattern": "Ollama 服务没在跑|11434.*(refused|拒绝)|connection refused|无法连接到 127\\.0\\.0\\.1|dial tcp 127\\.0\\.0\\.1:11434" },
+      "explanation": "本地模型跑在你自己的机器上，需要一个常驻服务（Ollama）在 11434 端口上等着；它没起来，任何本地模型操作都会失败。",
+      "actions": [
+        "看任务栏右下角有没有 Ollama 的图标；没有就从开始菜单启动它",
+        "还没装的话，先去「Ollama」那一页装（免管理员）",
+        "确认端口没被别的程序占：命令行跑 netstat -ano | findstr 11434",
+        "起来之后回「本地模型」页点一次「自检工具调用」确认通了"
+      ]
+    },
+    {
+      "id": "local-model-missing",
+      "priority": 172,
+      "category": "本地模型",
+      "severity": "fail",
+      "title": "本地没有这个模型",
+      "match": { "textPattern": "模型目录里没有这个模型|没有装这个模型|model .*not found|pull model manifest" },
+      "explanation": "本地模型是按名字取的，名字对不上就是没有 —— 它不会像在线接口那样自动给你路由到某个模型。",
+      "actions": [
+        "在命令行跑 ollama list，看看实际装了什么；名字要完全一致（包括冒号后面的尺寸）",
+        "想装新的一档：去「本地模型」页点对应档位的「下载」",
+        "刚删过的话，删除清单在 out\\\\state\\\\model-removals.log，里面写了怎么装回来"
+      ]
+    },
+    {
+      "id": "local-model-no-tool-calls",
+      "priority": 171,
+      "category": "本地模型",
+      "severity": "warn",
+      "title": "这个本地模型不会用工具",
+      "match": { "textPattern": "没有返回 tool_calls|no-tool-calls|把工具调用当成" },
+      "explanation": "模型卡上写着 tools，不代表它真的会返回结构化工具调用。它可能只是把\"我要调用 get_weather\"当普通文字吐出来，agent 拿到这种输出只能原地打转，而且不会报错。",
+      "actions": [
+        "换一档能力更强的模型再自检（4B 起，复杂任务建议 9B 以上）",
+        "这个模型仍然可以用来问答、翻译、补全，只是别拿它跑智能体",
+        "判断依据只看「自检工具调用」的结论，不要看模型卡的标签"
+      ]
+    },
+    {
+      "id": "local-disk-insufficient",
+      "priority": 170,
+      "category": "本地模型",
+      "severity": "fail",
+      "title": "磁盘空间不够放这个模型",
+      "match": { "textPattern": "磁盘不够|还差 [0-9.]+ GB|no space left|insufficient disk" },
+      "explanation": "本地模型是几 GB 到十几 GB 的文件。空间按体积的 1.5 倍预检 —— 下载中的临时分片、换个量化重下都会并存，按 1 倍算一定会下到一半失败。",
+      "actions": [
+        "换一个盘：把 OLLAMA_MODELS 指到空间大的分区，再重启 Ollama",
+        "在「本地模型」页把用不到的模型删掉（会记账，随时可以用 ollama pull 装回来）",
+        "换小一档的模型：2B / 4B 的体积比 27B 小一个数量级"
+      ]
+    },    {
       "id": "provider-bad-request",
       "priority": 160,
       "category": "请求",

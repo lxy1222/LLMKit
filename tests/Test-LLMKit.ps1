@@ -887,6 +887,30 @@ $chkCmd = Get-LLMKitActionCommandLine -ActionId 'local-endpoint-check' -ConfigRo
 Assert-True (@($chkCmd.arguments) -contains '-CheckLocalEndpoint') '命令里有 -CheckLocalEndpoint'
 Assert-True (@($chkCmd.arguments) -contains '-LocalModelTag') '命令带上要检查的模型 tag'
 Assert-True (-not (@($chkCmd.arguments) -contains '-Apply')) '只读动作永不带 -Apply'
+# 本地模型的错误翻译：这四条是用户最可能撞上的，提示必须给出可执行的下一步
+$em = Get-Content (Join-Path $projectRoot 'config\errormap.json') -Raw -Encoding UTF8 | ConvertFrom-Json
+$localRules = @($em.rules | Where-Object { [string]$_.category -eq '本地模型' })
+Assert-True ($localRules.Count -ge 4) ('本地模型至少有 4 条错误规则（实际 ' + $localRules.Count + '）')
+foreach ($need in @('local-service-down', 'local-model-missing', 'local-model-no-tool-calls', 'local-disk-insufficient')) {
+    $hit = @($localRules | Where-Object { [string]$_.id -eq $need })
+    Assert-Equal 1 $hit.Count ('有错误规则：' + $need)
+    Assert-True ([string]$hit[0].title).Length -gt 0 ($need + ' 有标题')
+    Assert-True ([string]$hit[0].explanation).Length -gt 20 ($need + ' 解释了为什么会这样')
+    Assert-True (@($hit[0].actions).Count -ge 2) ($need + ' 至少给两条可执行的下一步')
+    Assert-True ([string]$hit[0].match.textPattern).Length -gt 0 ($need + ' 有文本判据（不能只靠 context 兜底）')
+}
+# 服务没跑时那条规则要能真命中我们的提示文案
+$svcRule = @($localRules | Where-Object { $_.id -eq 'local-service-down' })[0]
+Assert-True ('Ollama 服务没在跑。先启动 Ollama（托盘图标），再自检。' -match [string]$svcRule.match.textPattern) '「服务没跑」的提示能被这条规则匹配到'
+
+# 自检函数的不变量：**永远返回结构化结论，不许抛异常**
+# （CI 上没有 Ollama，所以这里只能断言形状与白名单，不能断言具体结论）
+$probe = Test-LLMKitLocalEndpoint
+Assert-True ($null -ne $probe) '自检函数返回了对象'
+$verdictWhite = @('ok', 'no-tool-calls', 'no-service', 'no-model', 'error')
+Assert-True ($verdictWhite -contains [string]$probe.verdict) ('自检结论在白名单里（实际：' + [string]$probe.verdict + '）')
+Assert-True ([string]$probe.detail).Length -gt 5 '自检给出了人能看懂的说明'
+Assert-Equal $false ([bool]$probe.ok -and [string]$probe.verdict -ne 'ok') 'ok 与结论必须一致'
 Write-Host ('-' * 60) -ForegroundColor DarkGray
 if ($script:Fail -eq 0) {
     Write-Host ('全部通过：' + $script:Pass + ' 项') -ForegroundColor Green
