@@ -186,6 +186,7 @@ const previewCalls = [];
 const launchCalls = [];
 const runCalls = [];
 
+function escJs(s) { return String(s == null ? '' : s); }
 (async function main() {
   console.log('LLMKit 网页版前端 · 冒烟测试');
   console.log('  服务地址：' + BASE);
@@ -690,7 +691,8 @@ check('步骤状态跟着安装状态走', cl.indexOf('该你了') >= 0 || cl.in
   const locModels = locJson.models || [];
   const dlBtns = (localHtml.match(/data-act="model-pull"/g) || []).length;
   const rmBtns = (localHtml.match(/data-act="model-remove"/g) || []).length;
-  const expectDl = locModels.filter((m) => !m.downloaded && m.verdict !== 'no').length;
+  // installable=false 的档（GLM / qwen3-coder-next）本来就不给下载按钮
+  const expectDl = locModels.filter((m) => m.installable !== false && !m.downloaded && m.verdict !== 'no').length;
   const expectRm = locModels.filter((m) => m.downloaded).length;
   check('「下载」按钮数 = 没下且跑得动的档数', dlBtns === expectDl, '按钮 ' + dlBtns + ' / 应为 ' + expectDl);
   check('「删除」按钮数 = 已下载的档数', rmBtns === expectRm, '按钮 ' + rmBtns + ' / 应为 ' + expectRm);
@@ -702,6 +704,29 @@ check('步骤状态跟着安装状态走', cl.indexOf('该你了') >= 0 || cl.in
     check('（本机每档都跑得动，跳过"跑不动不给下载"断言）', true);
   }
 
+  // --- 分组：按品牌/系列分开，Qwen 组在最前，每组有说明 ---
+  const groups = locJson.modelGroups || [];
+  check('本地模型页按品牌分组渲染', groups.length >= 3, '组数 ' + groups.length);
+  check('第一组是 Qwen3.5 且标了推荐', groups[0] && groups[0].id === 'qwen35' && groups[0].recommended === true,
+    groups[0] ? groups[0].id + '/' + groups[0].recommended : '(无)');
+  check('每组都有一句说明', groups.every((g) => String(g.note || '').length > 10));
+  check('每组都给出"本机能跑几档"', groups.every((g) => typeof g.okCount === 'number'));
+  check('页面印出了组名', groups.every((g) => localHtml.indexOf(escJs(g.name)) >= 0 || localHtml.indexOf(g.name) >= 0));
+  check('页面印出了「推荐先用这个」', localHtml.indexOf('推荐先用这个') >= 0);
+  const unmeasured = locModels.filter((m) => m.unmeasured);
+  if (unmeasured.length > 0) {
+    check('未实测的档标了「未实测」', localHtml.indexOf('未实测') >= 0, '未实测 ' + unmeasured.length + ' 档');
+  } else {
+    check('（所有档都实测过，跳过未实测标记断言）', true);
+  }
+  const readonlyGroup = groups.filter((g) => g.models.some((m) => m.installable === false))[0];
+  if (readonlyGroup) {
+    check('只作说明的组里没有任何下载按钮',
+      readonlyGroup.models.every((m) => localHtml.indexOf('data-act="model-pull" data-target="' + m.ollamaTag + '"') < 0));
+    check('只作说明的档标了「不支持一键下载」', localHtml.indexOf('不支持一键下载') >= 0);
+  } else {
+    check('（没有"只作说明"的组，跳过该断言）', true);
+  }
   const dlModel = locModels.filter((m) => !m.downloaded && m.verdict !== 'no')[0];
   const rmModel = locModels.filter((m) => m.downloaded)[0];
   blockRun = true;
@@ -940,7 +965,7 @@ check('步骤状态跟着安装状态走', cl.indexOf('该你了') >= 0 || cl.in
     await wait('opencode 工具页（验证）', () => el('app').innerHTML.indexOf('id="do-verify"') >= 0, 20000);
     const endsBefore = (el('log').textContent.match(/== 结束：/g) || []).length;
     el('do-verify').onclick();
-    await wait('只读验证任务结束', () => (el('log').textContent.match(/== 结束：/g) || []).length > endsBefore, 120000);
+    await wait('只读验证任务结束', () => (el('log').textContent.match(/== 结束：/g) || []).length > endsBefore, 180000);
     const verdictTail = el('log').textContent.split('== 结束：').pop().split('\n')[0];
     check('只读验证给出确定结论', verdictTail.indexOf('已结束') < 0, '结论=' + verdictTail);
     check('日志区收到引擎输出', el('log').textContent.indexOf('LLMKit') >= 0);

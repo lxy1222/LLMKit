@@ -1607,11 +1607,13 @@
         return '<tr><td>' + esc(nameOf[e.id] || e.id) + '</td><td>' + yn + '</td><td>' + mono(e.protocol || '') + '</td><td>' + how + '</td><td>' + swCell + '</td></tr>';
       }).join('');
 
-      // 每个档位一个动作：能跑就下、下过就删、跑不动就不给下载按钮。
-      // 下载/删除都走 act() → /api/preview → 确认框 → /api/run，不新开任何安全通道。
-      var modelCards = (d.models || []).map(function (m) {
+      // 单个档位的卡片。分组渲染时每张卡都走这里，避免两处逻辑走偏。
+      function modelCardHtml(m) {
         var acts = '';
-        if (m.verdict === 'no') {
+        if (!m.installable) {
+          acts = '<div class="acts">' + pill('不支持一键下载', 'warn') +
+            '<span class="note">' + esc(m.installNote || '这个模型的体积或部署方式超出个人机范围') + '</span></div>';
+        } else if (m.verdict === 'no') {
           acts = '<div class="acts"><button disabled title="' + esc(m.verdictReason) + '">下载</button>' +
             '<span class="note">这台机器跑不动这一档，所以不给下载按钮 —— 别白下 ' + esc(String(m.sizeGB)) + ' GB</span></div>';
         } else if (m.downloaded) {
@@ -1628,7 +1630,8 @@
           '<div class="acts" style="justify-content:space-between;align-items:center">' +
           '<h3 style="margin:0">' + esc(m.name) + '</h3>' +
           '<span>' + localVerdictPill(m.verdict) +
-          (m.downloaded ? pill('已下载', 'ok') : '') + '</span></div>' +
+          (m.downloaded ? pill('已下载', 'ok') : '') +
+          (m.unmeasured ? pill('未实测', 'warn') : pill('已实测', 'ok')) + '</span></div>' +
           '<div class="meta">' + esc(m.params) + ' / ' + esc(m.quant) + ' / 下载 ' + esc(String(m.sizeGB)) + ' GB' +
           ' / 需要显存 ' + esc(String(m.minVramGB)) + ' GB / 上下文 ' + esc(String(m.context)) +
           ' / ' + esc(m.license) + ' / 能力：' + esc(localCapabilityText(m.capability)) + '</div>' +
@@ -1637,7 +1640,27 @@
           '<div class="meta">' + esc(m.capabilityNote || '') + '</div>' +
           acts +
           '</div>';
+      }
+
+      // 按品牌/系列分组渲染：组顺序只认配置里的 priority，组内按「需要显存 → 体积」。
+      // 分组的意义是让用户看懂"这几档是一家的、另一家是什么路数"，而不是一长条平铺。
+      var groupHtml = (d.modelGroups || []).map(function (g) {
+        var head = '<div style="margin-top:22px">' +
+          '<div class="acts" style="align-items:center">' +
+          '<h3 style="margin:0">' + esc(g.name) + '</h3>' +
+          (g.recommended ? pill('推荐先用这个', 'ok') : '') +
+          (g.okCount > 0 ? pill('本机能跑 ' + g.okCount + ' 档', 'ok') : pill('本机都跑不动', 'warn')) +
+          (g.noCount > 0 ? pill('跑不动 ' + g.noCount + ' 档', 'fail') : '') +
+          '<span class="note">' + esc(g.vendor) + (g.scene ? ' · ' + esc(g.scene) : '') + '</span>' +
+          '</div>' +
+          '<div class="meta">' + esc(g.note) + '</div>' +
+          (g.warn ? '<div class="callout">' + esc(g.warn) + '</div>' : '') +
+          '</div>';
+        return head + '<div class="grid">' + g.models.map(modelCardHtml).join('') + '</div>';
       }).join('');
+
+      // 配置里没有分组信息时（旧配置/被改坏），退回平铺，不能让整页空掉
+      var modelCards = groupHtml || (d.models || []).map(modelCardHtml).join('');
 
       $('app').innerHTML =
         '<section><h2>本地模型</h2>' +

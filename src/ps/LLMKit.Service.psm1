@@ -1097,6 +1097,12 @@ function Get-LLMKitLocalReport {
                         verdictReason  = [string]$v.reason
                         downloaded     = ($installedNames -contains $tag)
                         manifestSizeGB = [double]$(if ($manifestSizes.ContainsKey($tag)) { $manifestSizes[$tag] } else { 0 })
+                        groupId        = [string](Get-ObjectProp -Object $m -Name 'groupId')
+                        # 没有 measured 段 = 本项目没实测过，界面上要标出来
+                        unmeasured     = ($null -eq (Get-ObjectProp -Object $m -Name 'measured'))
+                        # installable=false：体积或部署方式超出个人机范围，只作说明、不给下载按钮
+                        installable    = -not ($m.PSObject.Properties['installable'] -and $m.installable -eq $false)
+                        installNote    = [string](Get-ObjectProp -Object $m -Name 'installNote')
                     }))
     }
 
@@ -1159,6 +1165,25 @@ function Get-LLMKitLocalReport {
                     contextApplied   = [bool]$ctx.applied
                 })
             models        = @($items)
+            # 按品牌/系列分组：组顺序只认 priority，组内按「需要显存 → 体积」升序
+            modelGroups   = @(Get-LLMKitModelGroupCatalog -ConfigRoot $ConfigRoot |
+                Sort-Object { [int](Get-ObjectProp -Object $_ -Name 'priority') } | ForEach-Object {
+                    $gid = [string](Get-ObjectProp -Object $_ -Name 'id')
+                    $members = @($items | Where-Object { $_.groupId -eq $gid } |
+                        Sort-Object { [double]$_.minVramGB }, { [double]$_.sizeGB })
+                    [pscustomobject]([ordered]@{
+                            id          = $gid
+                            name        = [string](Get-ObjectProp -Object $_ -Name 'name')
+                            vendor      = [string](Get-ObjectProp -Object $_ -Name 'vendor')
+                            recommended = [bool](Get-ObjectProp -Object $_ -Name 'recommended')
+                            scene       = [string](Get-ObjectProp -Object $_ -Name 'scene')
+                            note        = [string](Get-ObjectProp -Object $_ -Name 'note')
+                            warn        = [string](Get-ObjectProp -Object $_ -Name 'warn')
+                            okCount     = @($members | Where-Object { $_.verdict -eq 'ok' }).Count
+                            noCount     = @($members | Where-Object { $_.verdict -eq 'no' }).Count
+                            models      = @($members)
+                        })
+                })
             # 能自动切换的两个目标（其余只给说明）
             switchTargets = @(Get-LLMKitLocalSwitchTargets | ForEach-Object {
                     $st = Get-LLMKitLocalSwitchState -Target $_.id

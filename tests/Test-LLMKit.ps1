@@ -1089,6 +1089,71 @@ try {
     $env:USERPROFILE = $realProfile
     Remove-Item -LiteralPath $sandboxHome -Recurse -Force -ErrorAction SilentlyContinue
 }
+# ======================================================================
+Write-Host ''
+Write-Host '本地模型的品牌分组（能跑哪一档按组展示）' -ForegroundColor Cyan
+# ======================================================================
+# 分组不是排版问题：它决定用户看到"同一家的 2B/4B/9B/27B"还是"一条平铺的 6 张卡"。
+# 这里钉住：组顺序只认 priority、每个模型必须归属一个存在的组、每组都要有说明。
+$groupCat = @(Get-LLMKitModelGroupCatalog -ConfigRoot $projectRoot)
+Assert-True ($groupCat.Count -ge 3) ('至少有 3 个分组（实际 ' + $groupCat.Count + '）')
+$groupIds = @($groupCat | ForEach-Object { [string](Get-ObjectProp -Object $_ -Name 'id') })
+Assert-Equal $groupIds.Count (@($groupIds | Sort-Object -Unique).Count) '组 id 无重复'
+$groupPrios = @($groupCat | ForEach-Object { [int](Get-ObjectProp -Object $_ -Name 'priority') })
+Assert-Equal $groupPrios.Count (@($groupPrios | Sort-Object -Unique).Count) '组 priority 无重复（顺序才是确定的）'
+$firstByPrio = @($groupCat | Sort-Object { [int](Get-ObjectProp -Object $_ -Name 'priority') })[0]
+Assert-Equal 'qwen35' ([string](Get-ObjectProp -Object $firstByPrio -Name 'id')) 'Qwen3.5 组排第一'
+Assert-True ([bool](Get-ObjectProp -Object $firstByPrio -Name 'recommended')) 'Qwen3.5 组标了推荐'
+foreach ($g in $groupCat) {
+    $gid = [string](Get-ObjectProp -Object $g -Name 'id')
+    Assert-True ([string](Get-ObjectProp -Object $g -Name 'name')).Length -gt 0 ($gid + ' 有组名')
+    Assert-True ([string](Get-ObjectProp -Object $g -Name 'note')).Length -gt 10 ($gid + ' 有说明（不是空话）')
+    Assert-True ([string](Get-ObjectProp -Object $g -Name 'vendor')).Length -gt 0 ($gid + ' 标了厂商')
+}
+
+# 每个模型都要归属一个存在的组；每个组至少一个模型
+$mdlCat = @(Get-LLMKitModelCatalog -ConfigRoot $projectRoot)
+$orphans = @($mdlCat | Where-Object { $groupIds -notcontains [string](Get-ObjectProp -Object $_ -Name 'groupId') })
+Assert-Equal 0 $orphans.Count ('没有模型落在未知分组里（越界：' + (($orphans | ForEach-Object { $_.id }) -join '、') + '）')
+foreach ($gid in $groupIds) {
+    $members = @($mdlCat | Where-Object { [string](Get-ObjectProp -Object $_ -Name 'groupId') -eq $gid })
+    Assert-True ($members.Count -ge 1) ($gid + ' 分组至少有 1 档模型')
+}
+
+# 报告里的 modelGroups：顺序按 priority，组内按「显存 → 体积」升序，计数与逐条判定一致
+$repG = Get-LLMKitLocalReport -ConfigRoot $svcRoot
+$groupsOut = @($repG.modelGroups)
+Assert-Equal $groupCat.Count $groupsOut.Count '报告里的组数与配置一致'
+$prevPrio = -1
+foreach ($gOut in $groupsOut) {
+    $def = @($groupCat | Where-Object { [string](Get-ObjectProp -Object $_ -Name 'id') -eq [string]$gOut.id })[0]
+    $prio = [int](Get-ObjectProp -Object $def -Name 'priority')
+    Assert-True ($prio -gt $prevPrio) ('组按 priority 递增输出：' + $gOut.id)
+    $prevPrio = $prio
+    Assert-Equal (@($gOut.models).Count) (@($mdlCat | Where-Object { [string](Get-ObjectProp -Object $_ -Name 'groupId') -eq [string]$gOut.id }).Count) ($gOut.id + ' 的成员数对得上')
+    Assert-Equal (@($gOut.models | Where-Object { $_.verdict -eq 'ok' }).Count) $gOut.okCount ($gOut.id + ' 的 okCount 与逐条判定一致')
+    Assert-Equal (@($gOut.models | Where-Object { $_.verdict -eq 'no' }).Count) $gOut.noCount ($gOut.id + ' 的 noCount 与逐条判定一致')
+    for ($k = 1; $k -lt @($gOut.models).Count; $k++) {
+        $a = @($gOut.models)[$k - 1]; $b = @($gOut.models)[$k]
+        $ka = [double]$a.minVramGB * 1000 + [double]$a.sizeGB
+        $kb = [double]$b.minVramGB * 1000 + [double]$b.sizeGB
+        Assert-True ($ka -le $kb) ($gOut.id + ' 组内按「需要显存 → 体积」升序（' + $a.name + ' 应在 ' + $b.name + ' 之前）')
+    }
+}
+
+# "未实测"与"不支持一键下载"两个标记必须与配置一致
+foreach ($m in @($repG.models)) {
+    $src = @($mdlCat | Where-Object { [string](Get-ObjectProp -Object $_ -Name 'id') -eq [string]$m.id })[0]
+    $hasMeasured = ($null -ne (Get-ObjectProp -Object $src -Name 'measured'))
+    Assert-Equal (-not $hasMeasured) ([bool]$m.unmeasured) ($m.id + ' 的"未实测"标记与配置一致')
+    $srcInstallable = -not ($src.PSObject.Properties['installable'] -and $src.installable -eq $false)
+    Assert-Equal $srcInstallable ([bool]$m.installable) ($m.id + ' 的"可下载"标记与配置一致')
+    if (-not $srcInstallable) {
+        Assert-True ([string]$m.installNote).Length -gt 10 ($m.id + ' 不可下载时必须说明为什么')
+    }
+}
+$notInstallable = @($repG.models | Where-Object { -not $_.installable })
+Assert-True ($notInstallable.Count -ge 1) ('目录里有"只作说明"的档（实际 ' + $notInstallable.Count + ' 档）')
 Write-Host ('-' * 60) -ForegroundColor DarkGray
 if ($script:Fail -eq 0) {
     Write-Host ('全部通过：' + $script:Pass + ' 项') -ForegroundColor Green

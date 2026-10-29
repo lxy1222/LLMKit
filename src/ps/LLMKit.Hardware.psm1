@@ -211,6 +211,21 @@ function Get-LLMKitModelCatalog {
     return @($data.models)
 }
 
+function Get-LLMKitModelGroupCatalog {
+    <#
+        读 config/models.json 的 groups 段。文件里没有 groups 时返回空数组，
+        调用方按"全部归到未分组"处理 —— 旧配置不该让整页炸掉。
+    #>
+    param([Parameter(Mandatory = $true)][string]$ConfigRoot)
+
+    $path = Join-Path $ConfigRoot 'config\models.json'
+    if (-not (Test-Path -LiteralPath $path)) { return @() }
+    try {
+        $data = Get-Content -LiteralPath $path -Raw -Encoding UTF8 | ConvertFrom-Json
+        if (-not $data.PSObject.Properties['groups']) { return @() }
+        return @($data.groups)
+    } catch { return @() }
+}
 function Get-LLMKitOllamaStatus {
     <#
         运行时状态：装了没、什么版本、服务在不在跑、装了什么模型。
@@ -933,5 +948,5 @@ function Set-LLMKitOllamaContext {
     return [pscustomobject]@{ ok = $false; verdict = 'not-applied'; detail = ('设成 ' + $Value + ' 之后实测仍是 ' + $effective + '，已回滚。多半是这个 Ollama 版本不认 OLLAMA_CONTEXT_LENGTH，或者还有另一个服务实例在跑。'); previousValue = $oldRaw; mode = $mode }
 }
 Export-ModuleMember -Function `
-    'Get-LLMKitHardware', 'Get-LLMKitModelVerdict', 'Get-LLMKitModelCatalog', `
+    'Get-LLMKitHardware', 'Get-LLMKitModelVerdict', 'Get-LLMKitModelCatalog', 'Get-LLMKitModelGroupCatalog', `
     'Get-LLMKitOllamaStatus', 'Get-LLMKitOllamaModelRoot', 'Get-LLMKitDiskFreeGB', 'Get-LLMKitModelPullPlan', 'Invoke-LLMKitModelPull', 'Invoke-LLMKitModelRemove', 'Resolve-LLMKitOllamaExe', 'Test-LLMKitOllamaRunning', 'Get-LLMKitDiskGate', 'Test-LLMKitLocalEndpoint', 'Get-LLMKitOllamaRootInfo', 'Get-LLMKitOllamaManifestInfo', 'Get-LLMKitModelLocationRoots', 'Resolve-LLMKitModelLocation', 'Get-LLMKitOllamaContextSetting', 'Set-LLMKitOllamaContext', 'Restart-LLMKitOllama'
