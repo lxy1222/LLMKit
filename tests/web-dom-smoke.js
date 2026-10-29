@@ -196,10 +196,17 @@ function escJs(s) { return String(s == null ? '' : s); }
   // 浏览器里 app.js 用的是相对地址（/api/x），会自动相对当前页面 origin 解析；
   // Node 的 fetch 没有 origin 概念，所以这里补上 BASE。
   let blockRun = false;
+  // 让 /api/local 直接吐一份合成报告：用来在"装过 Ollama"的机器上也能验
+  // "干净机器没装"那条分支。只影响这一条路径，其它请求照旧打真实服务。
+  let localReportOverride = null;
   const realFetch = sandbox.fetch;
   sandbox.fetch = function (u, o) {
     const raw = String(u);
     const url = raw.charAt(0) === '/' ? BASE + raw : raw;
+    if (localReportOverride && url.indexOf('/api/local') >= 0) {
+      return Promise.resolve(new Response(JSON.stringify(localReportOverride),
+        { status: 200, headers: { 'Content-Type': 'application/json' } }));
+    }
     const body = o && o.body ? JSON.parse(o.body) : null;
     if (url.indexOf('/api/preview') >= 0) { previewCalls.push(body); }
     if (url.indexOf('/api/run') >= 0) { runCalls.push(body); }
@@ -812,9 +819,11 @@ check('步骤状态跟着安装状态走', cl.indexOf('该你了') >= 0 || cl.in
     check('（本机没有已下载的模型，跳过删除确认断言）', true);
   }
   // --- 每个模型的具体位置：必须来自"盘上核实"，不是照抄 Ollama 报的目录 ---
-  check('已装模型表有「具体位置」一列', localHtml.indexOf('具体位置') >= 0);
+  // 干净机器上没装 Ollama 时这一整块（含"找过哪个目录"）本来就不渲染，
+  // 断言跟着真实状态走，否则在 CI 上必然假红。
   const installedModels = (locJson.ollama && locJson.ollama.models) || [];
   if (installedModels.length > 0) {
+    check('已装模型表有「具体位置」一列', localHtml.indexOf('具体位置') >= 0);
     const verifiedCount = installedModels.filter((x) => x.foundOnDisk && x.verified).length;
     check('每个已装模型都在盘上核实到了清单',
       verifiedCount === installedModels.length,
@@ -824,10 +833,11 @@ check('步骤状态跟着安装状态走', cl.indexOf('该你了') >= 0 || cl.in
     check('页面上确实印出了清单路径', localHtml.indexOf('清单：') >= 0);
     check('页面上确实印出了分片目录', localHtml.indexOf('分片：') >= 0);
     check('页面上有「盘上已核实」标记', localHtml.indexOf('盘上已核实') >= 0);
+    check('已装模型表写的是「实占（按清单）」', localHtml.indexOf('实占（按清单）') >= 0);
+    check('页面注明找过哪几个目录（可展开）', localHtml.indexOf('找过这几个目录') >= 0);
   } else {
     check('（本机没装本地模型，跳过具体位置断言）', true);
   }
-  check('页面注明找过哪几个目录（可展开）', localHtml.indexOf('找过这几个目录') >= 0);
 
   // --- 组内改成表格：共同字段只在组头说一次，逐档横向对比 ---
   check('能力档已收成表格列（模型/参数/体积/需显存/判定/能力/操作）',
@@ -856,9 +866,16 @@ check('步骤状态跟着安装状态走', cl.indexOf('该你了') >= 0 || cl.in
   check('本地模型页给出可自动切换的目标', swTargets.length === 2, JSON.stringify(swTargets.map((s) => s.id)));
   check('可切换的目标就是 opencode 与 codex', swTargets.map((s) => s.id).sort().join(',') === 'codex,opencode');
   check('不支持自动切换的工具写明"只给片段"', localHtml.indexOf('只给片段，不代写') >= 0);
+  // 下拉里列的是"目录里已下载"的档（口径同 app.js 的 localTags）；一个都没有时页面只给一句话。
+  var smokeLocalTags = (locJson.models || []).filter(function (m) { return m.downloaded; }).map(function (m) { return m.ollamaTag; });
+  if (!smokeLocalTags.length && locJson.ollama) { smokeLocalTags = (locJson.ollama.models || []).map(function (m) { return m.name; }); }
   for (const s of swTargets) {
-    check(s.id + ' 行给出「切到本地」按钮', localHtml.indexOf('data-switch="local" data-target="' + s.id + '"') >= 0);
-    check(s.id + ' 行给出模型下拉', localHtml.indexOf('id="swModel-' + s.id + '"') >= 0);
+    if (smokeLocalTags.length > 0) {
+      check(s.id + ' 行给出「切到本地」按钮', localHtml.indexOf('data-switch="local" data-target="' + s.id + '"') >= 0);
+      check(s.id + ' 行给出模型下拉', localHtml.indexOf('id="swModel-' + s.id + '"') >= 0);
+    } else {
+      check(s.id + ' 行说明「还没有本地模型可切」', localHtml.indexOf('还没有本地模型可切') >= 0);
+    }
   }
   const anyInstalled = (locJson.ollama.models || []).length > 0;
   if (anyInstalled && swTargets.length > 0) {
@@ -882,12 +899,23 @@ check('步骤状态跟着安装状态走', cl.indexOf('该你了') >= 0 || cl.in
     check('（本机没有已装模型，跳过切换点击断言）', true);
   }
   // --- 位置与上下文：模型在哪、上下文实际多少，都必须标出来 ---
-  check('本地模型页标出 Ollama 安装位置', localHtml.indexOf('安装位置') >= 0);
+  // 没装 Ollama 时"安装位置/目录来源/实占/默认上下文"这几行本来就不渲染，
+  // 换成断言它给了"先装 Ollama"的入口 —— 这样干净机器上验的也是真行为。
+  const olInstalled = !!(locJson.ollama && locJson.ollama.installed);
+  if (olInstalled) {
+    check('本地模型页标出 Ollama 安装位置', localHtml.indexOf('安装位置') >= 0);
+    const rootPilled = localHtml.indexOf('被 OLLAMA_MODELS 改过') >= 0 || localHtml.indexOf('默认位置') >= 0;
+    check('模型目录注明了来源（默认位置 / 被 OLLAMA_MODELS 改过）', rootPilled);
+    check('本地模型页有「默认上下文」一行', localHtml.indexOf('默认上下文') >= 0);
+    if (installedModels.length === 0) {
+      // 装了运行时但一个模型都没下过：应给"挑能跑的那档"的提示，而不是空表
+      check('装了运行时但没下过模型：给出"还没有下过模型"的提示', localHtml.indexOf('还没有下过模型') >= 0);
+    }
+  } else {
+    check('没装运行时：页面明说「还没装运行时」', localHtml.indexOf('还没装运行时') >= 0);
+    check('没装运行时：直接给出去装 Ollama 的入口', localHtml.indexOf('#/tool/ollama') >= 0);
+  }
   check('本地模型页标出模型目录', localHtml.indexOf('模型目录') >= 0);
-  const rootPilled = localHtml.indexOf('被 OLLAMA_MODELS 改过') >= 0 || localHtml.indexOf('默认位置') >= 0;
-  check('模型目录注明了来源（默认位置 / 被 OLLAMA_MODELS 改过）', rootPilled);
-  check('已装模型表写的是「实占（按清单）」', localHtml.indexOf('实占（按清单）') >= 0);
-  check('本地模型页有「默认上下文」一行', localHtml.indexOf('默认上下文') >= 0);
   const ctxApplied = !!(locJson.ollama && locJson.ollama.contextApplied);
   const hasCtxBtn = /data-act="local-context"/.test(localHtml);
   if (ctxApplied) {
@@ -908,6 +936,51 @@ check('步骤状态跟着安装状态走', cl.indexOf('该你了') >= 0 || cl.in
       check('取消后没有改上下文', runCalls.length === 0);
     }
   }
+  // --- 干净机器：没装 Ollama 时页面该长什么样 ---
+  // 这条不依赖本机装没装：把 /api/local 换成一份"运行时缺席"的报告再渲染一次。
+  // CI 的 runner 就是这种机器，以前这里只能靠"跳过"混过去，等于没验。
+  console.log('干净机器（模拟没装 Ollama）');
+  localReportOverride = {
+    hardware: locJson.hardware,
+    contextHint: locJson.contextHint,
+    models: (locJson.models || []).map(function (m) {
+      var c = {}; Object.keys(m).forEach(function (k) { c[k] = m[k]; });
+      c.downloaded = false; c.verdict = 'unknown'; return c;
+    }),
+    modelGroups: locJson.modelGroups,
+    switchTargets: locJson.switchTargets,
+    endpoints: locJson.endpoints,
+    ollama: { installed: false, running: false, version: '', installDir: '', modelRoot: '', baseUrl: '',
+      isDefaultRoot: true, models: [], modelsTotalGB: 0, locationRoots: [],
+      contextRequested: locJson.contextHint, contextEffective: 0, contextApplied: true }
+  };
+  setHash('#/');
+  await wait('回到首页', () => el('app').innerHTML.indexOf('OpenCode') >= 0);
+  setHash('#/local');
+  const cleanHtml = await wait('没装运行时的本地模型页', () => {
+    const h = el('app').innerHTML;
+    return h.indexOf('还没装运行时') >= 0 ? h : false;
+  }, 30000);
+  check('没装 Ollama：页面明说「还没装运行时」', cleanHtml.indexOf('还没装运行时') >= 0);
+  check('没装 Ollama：给出去装 Ollama 的入口', cleanHtml.indexOf('#/tool/ollama') >= 0);
+  check('没装 Ollama：不编造安装位置', cleanHtml.indexOf('安装位置') < 0);
+  check('没装 Ollama：不编造「实占（按清单）」表', cleanHtml.indexOf('实占（按清单）') < 0);
+  check('没装 Ollama：不编造「默认上下文」行', cleanHtml.indexOf('默认上下文') < 0);
+  check('没装 Ollama：不编造模型的具体位置', cleanHtml.indexOf('具体位置') < 0);
+  check('没装 Ollama：切换列说明「还没有本地模型可切」', cleanHtml.indexOf('还没有本地模型可切') >= 0);
+  check('没装 Ollama：判定表照旧给出（装之前也能看能跑哪档）', cleanHtml.indexOf('能跑哪一档') >= 0);
+  check('没装 Ollama：仍说明上下文必须显式调到 32K', cleanHtml.indexOf('静默截断') >= 0);
+  localReportOverride = null;
+  setHash('#/');
+  await wait('恢复真实报告', () => el('app').innerHTML.indexOf('OpenCode') >= 0);
+  setHash('#/local');
+  const backHtml = await wait('回到真实本地模型页', () => {
+    const h = el('app').innerHTML;
+    return h.indexOf('本地模型') >= 0 ? h : false;
+  }, 30000);
+  check('恢复真实报告后页面回到本机状态',
+    olInstalled ? backHtml.indexOf('还没装运行时') < 0 : backHtml.indexOf('还没装运行时') >= 0);
+
   // --- 接入矩阵 + 工具调用自检 ---
   check('本地模型页有「接进各智能体」矩阵', localHtml.indexOf('接进各智能体') >= 0);
   check('矩阵里列出 Anthropic 协议的工具（Claude Code）', localHtml.indexOf('anthropic-messages') >= 0);
@@ -988,7 +1061,7 @@ check('步骤状态跟着安装状态走', cl.indexOf('该你了') >= 0 || cl.in
     await wait('已装工具页（启动）', () => el('app').innerHTML.indexOf('怎么启动、怎么用') >= 0);
     check('已装的工具在页面上给可点的启动按钮', el('app').innerHTML.indexOf('data-launch="' + launchId + '"') >= 0);
     clickDocBtn({ 'data-launch': launchId, 'data-mode': 'interactive', 'data-name': launchId });
-    await wait('启动确认框弹出', () => el('modal').classList.contains('show'));
+    await wait('启动确认框弹出', () => el('modal').classList.contains('show'), 20000);
     const dry = launchCalls[launchCalls.length - 1];
     check('点启动先向服务端要命令（dryRun）', !!dry && dry.dryRun === true && dry.toolId === launchId, JSON.stringify(dry));
     // 安全边界：启动请求体里只能有这三个字段，不能出现路径 / 命令 / 参数
@@ -1050,10 +1123,10 @@ check('步骤状态跟着安装状态走', cl.indexOf('该你了') >= 0 || cl.in
   // --- 没有演练模式了：改动型动作一律先确认，且命令是服务端给的原文 ---
   console.log('改动前确认（改动型动作必须弹框）');
   setHash('#/tool/opencode');
-  await waitFor(() => el('app').innerHTML.indexOf('id="do-install"') >= 0);
+  await wait('opencode 工具页重新渲染（确认链路）', () => el('app').innerHTML.indexOf('id="do-install"') >= 0, 20000);
   previewCalls.length = 0; runCalls.length = 0;
   el('do-install').onclick();
-  await wait('执行模式确认框弹出', () => el('modal').classList.contains('show'));
+  await wait('执行模式确认框弹出', () => el('modal').classList.contains('show'), 20000);
   check('执行模式下弹出确认框', el('modal').classList.contains('show'));
   check('确实先问了服务端要命令', previewCalls.length === 1 && previewCalls[0].apply === true);
   const mbody = el('modalBody').innerHTML;
@@ -1070,7 +1143,7 @@ check('步骤状态跟着安装状态走', cl.indexOf('该你了') >= 0 || cl.in
 
   // 卸载按钮也要走同一条路
   clickDocBtn({ 'data-act': 'tool-uninstall', 'data-target': 'opencode' });
-  await wait('卸载确认框弹出', () => el('modal').classList.contains('show'));
+  await wait('卸载确认框弹出', () => el('modal').classList.contains('show'), 20000);
   check('卸载同样要确认', el('modal').classList.contains('show'));
   check('卸载确认框给出真实命令', el('modalBody').innerHTML.indexOf('-Uninstall opencode') >= 0);
   check('卸载默认不带移除用户配置', previewCalls[previewCalls.length - 1].removeUserConfig === undefined);
@@ -1098,7 +1171,7 @@ check('步骤状态跟着安装状态走', cl.indexOf('该你了') >= 0 || cl.in
     check('拿到了会话日志路径', sessPath.length > 0);
     previewCalls.length = 0; runCalls.length = 0;
     clickDocBtn({ 'data-restore': sessPath, 'data-session': '' });
-    await wait('还原确认框弹出', () => el('modal').classList.contains('show'));
+    await wait('还原确认框弹出', () => el('modal').classList.contains('show'), 20000);
     check('还原要确认', el('modal').classList.contains('show'));
     check('确认框命令是 -Restore 那条', el('modalBody').innerHTML.indexOf('-Restore') >= 0);
     const rBody = previewCalls[previewCalls.length - 1];
@@ -1118,7 +1191,7 @@ check('步骤状态跟着安装状态走', cl.indexOf('该你了') >= 0 || cl.in
   await wait('opencode 工具页（确认链路）', () => el('app').innerHTML.indexOf('id="do-install"') >= 0, 20000);
   previewCalls.length = 0; runCalls.length = 0;
   el('do-install').onclick();
-  await wait('安装确认框弹出', () => el('modal').classList.contains('show'));
+  await wait('安装确认框弹出', () => el('modal').classList.contains('show'), 20000);
   const pv1 = previewCalls[0];
   check('点安装先调 /api/preview', previewCalls.length === 1);
   check('预览带上选中的安装层', pv1.tierId === 'npm-global', JSON.stringify(pv1));
