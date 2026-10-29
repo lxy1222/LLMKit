@@ -735,6 +735,23 @@ check('步骤状态跟着安装状态走', cl.indexOf('该你了') >= 0 || cl.in
   } else {
     check('（本机没有已下载的模型，跳过删除确认断言）', true);
   }
+  // --- 每个模型的具体位置：必须来自"盘上核实"，不是照抄 Ollama 报的目录 ---
+  check('已装模型表有「具体位置」一列', localHtml.indexOf('具体位置') >= 0);
+  const installedModels = (locJson.ollama && locJson.ollama.models) || [];
+  if (installedModels.length > 0) {
+    const verifiedCount = installedModels.filter((x) => x.foundOnDisk && x.verified).length;
+    check('每个已装模型都在盘上核实到了清单',
+      verifiedCount === installedModels.length,
+      '核实 ' + verifiedCount + ' / ' + installedModels.length);
+    check('位置给出清单文件全路径', installedModels.every((x) => String(x.manifestPath || '').length > 0));
+    check('位置给出分片目录', installedModels.every((x) => String(x.blobsDir || '').length > 0));
+    check('页面上确实印出了清单路径', localHtml.indexOf('清单：') >= 0);
+    check('页面上确实印出了分片目录', localHtml.indexOf('分片：') >= 0);
+    check('页面上有「盘上已核实」标记', localHtml.indexOf('盘上已核实') >= 0);
+  } else {
+    check('（本机没装本地模型，跳过具体位置断言）', true);
+  }
+  check('页面注明找过哪几个目录（可展开）', localHtml.indexOf('找过这几个目录') >= 0);
   // --- 切换：只有 OpenCode / Codex 能自动写，其余明说"只给片段" ---
   const swTargets = (locJson.switchTargets || []);
   check('本地模型页给出可自动切换的目标', swTargets.length === 2, JSON.stringify(swTargets.map((s) => s.id)));

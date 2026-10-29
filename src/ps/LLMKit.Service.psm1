@@ -1060,13 +1060,17 @@ function Get-LLMKitLocalReport {
     $rootInfo = Get-LLMKitOllamaRootInfo
     $ctx = Get-LLMKitOllamaContextSetting
     $installedNames = @($ollama.models | ForEach-Object { [string]$_.name })
-    # 每个模型的真实体积从清单算（ollama list/ps 的数字实测会差一个数量级）
+    # 每个模型的**实际落盘位置**：不信 Ollama 报的目录，逐个候选根目录去翻清单并核对分片。
+    # 这样即使 OLLAMA_MODELS 改过而服务没重启，也能找到文件真正在哪。
     $manifestSizes = @{}
+    $locations = @{}
     $totalGB = 0
     foreach ($mm in @($ollama.models)) {
-        $mi = Get-LLMKitOllamaManifestInfo -ModelRoot $rootInfo.modelRoot -Tag ([string]$mm.name)
-        $manifestSizes[[string]$mm.name] = [double]$mi.sizeGB
-        if ($mi.found) { $totalGB += [double]$mi.sizeGB } else { $totalGB += [double]$mm.sizeGB }
+        $tagName = [string]$mm.name
+        $loc = Resolve-LLMKitModelLocation -Tag $tagName
+        $locations[$tagName] = $loc
+        if ($loc.found) { $totalGB += [double]$loc.sizeGB } else { $totalGB += [double]$mm.sizeGB }
+        $manifestSizes[$tagName] = [double]$loc.sizeGB
     }
 
     $items = New-Object System.Collections.ArrayList
@@ -1127,13 +1131,25 @@ function Get-LLMKitLocalReport {
                     baseUrl      = [string]$ollama.baseUrl
                     modelRoot    = [string]$ollama.modelRoot
                     models       = @($ollama.models | ForEach-Object {
+                            $n2tag = [string]$_.name
+                            $loc2 = $locations[$n2tag]
                             [pscustomobject]([ordered]@{
-                                    name     = [string]$_.name
-                                    sizeGB   = [double]$_.sizeGB
-                                    modified = [string]$_.modified
+                                    name         = $n2tag
+                                    sizeGB       = [double]$_.sizeGB
+                                    modified     = [string]$_.modified
+                                    realSizeGB   = [double]$(if ($loc2) { $loc2.sizeGB } else { 0 })
+                                    foundOnDisk  = [bool]$(if ($loc2) { $loc2.found } else { $false })
+                                    verified     = [bool]$(if ($loc2) { $loc2.verified } else { $false })
+                                    root         = [string]$(if ($loc2) { $loc2.root } else { '' })
+                                    manifestPath = [string]$(if ($loc2) { $loc2.manifestPath } else { '' })
+                                    blobsDir     = [string]$(if ($loc2) { $loc2.blobsDir } else { '' })
+                                    missingBlobs = @($(if ($loc2) { $loc2.missingBlobs } else { @() }))
                                 })
                         })
                     modelsTotalGB = [math]::Round($totalGB, 2)
+                    locationRoots = @(Get-LLMKitModelLocationRoots | ForEach-Object {
+                            [pscustomobject]([ordered]@{ path = [string]$_; exists = (Test-Path -LiteralPath $_) })
+                        })
                     installDir     = [string]$rootInfo.installDir
                     exePath        = [string]$rootInfo.exePath
                     rootSource     = [string]$rootInfo.modelRootSource

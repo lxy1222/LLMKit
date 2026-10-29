@@ -952,8 +952,28 @@ $mi = Get-LLMKitOllamaManifestInfo -ModelRoot $tmpRoot -Tag 'fake:3b'
 Assert-True ([bool]$mi.found) '能从清单里找到模型'
 Assert-Equal 2 ([int]$mi.layerCount) '清单里数到 2 个分片'
 Assert-True ([double]$mi.sizeGB -ge 2.0 -and [double]$mi.sizeGB -le 2.2) ('体积按分片求和（1.5+0.6 GB → 实际 ' + $mi.sizeGB + ' GB）')
+Assert-True ([bool]$mi.verified) '分片齐全时标记为已核实'
+Assert-True ([string]$mi.manifestPath).Length -gt 0 '给出清单文件全路径'
+Assert-True ([string]$mi.blobsDir).Length -gt 0 '给出分片目录'
 $mi2 = Get-LLMKitOllamaManifestInfo -ModelRoot $tmpRoot -Tag 'fake:9b'
 Assert-True (-not [bool]$mi2.found) '清单里没有的 tag 返回未找到（不抛异常）'
+# 缺分片：删掉一个 blob，核实必须变成 false 并说清缺哪个
+Remove-Item -LiteralPath (Join-Path $blobDir 'sha256-bbbb') -Force
+$mi3 = Get-LLMKitOllamaManifestInfo -ModelRoot $tmpRoot -Tag 'fake:3b'
+Assert-True ([bool]$mi3.found) '清单还在'
+Assert-True (-not [bool]$mi3.verified) '缺分片时不能算"已核实"'
+Assert-Equal 1 (@($mi3.missingBlobs).Count) '报出缺了 1 个分片'
+Assert-True ([string]@($mi3.missingBlobs)[0] -match '^sha256-') '缺的是哪个分片也说清楚'
+# 实际定位：OLLAMA_MODELS 指到别的目录时，也能在候选目录里找到真身
+$otherRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('llmkit-other-' + [guid]::NewGuid().ToString('N'))
+[void](New-Item -ItemType Directory -Path $otherRoot -Force)
+# 第一个候选目录是空的，模型在第二个里 —— 定位必须继续往后找
+$loc = Resolve-LLMKitModelLocation -Tag 'fake:3b' -Roots @($otherRoot, $tmpRoot)
+Assert-True ([bool]$loc.found) '第一个候选目录没有时，会继续找下一个'
+Assert-Equal $tmpRoot ([string]$loc.root) '返回的是真正找到清单的那个目录'
+$locMissing = Resolve-LLMKitModelLocation -Tag 'definitely-not-a-model:1b' -Roots @($otherRoot, $tmpRoot)
+Assert-True (-not [bool]$locMissing.found) '完全不存在的模型返回未找到（不抛异常）'
+Remove-Item -LiteralPath $otherRoot -Recurse -Force -ErrorAction SilentlyContinue
 Remove-Item -LiteralPath $tmpRoot -Recurse -Force -ErrorAction SilentlyContinue
 
 # 上下文：请求值/生效值/是否已应用 三件事都要给出来
@@ -974,6 +994,17 @@ foreach ($f in @('installDir', 'exePath', 'rootSource', 'isDefaultRoot', 'contex
 $hasManifestField = $true
 foreach ($m in @($rep.models)) { if (-not ($m.PSObject.Properties.Name -contains 'manifestSizeGB')) { $hasManifestField = $false } }
 Assert-True $hasManifestField '每个模型档都带 manifestSizeGB'
+Assert-True ($rep.ollama.PSObject.Properties.Name -contains 'locationRoots') '报告里给出"找过哪几个目录"'
+# 已装模型每一条都要有位置字段（服务没在跑时列表为空，那就跳过）
+if (@($rep.ollama.models).Count -gt 0) {
+    foreach ($im in @($rep.ollama.models)) {
+        foreach ($f in @('foundOnDisk', 'verified', 'manifestPath', 'blobsDir', 'realSizeGB')) {
+            Assert-True ($im.PSObject.Properties.Name -contains $f) ('已装模型条目有位置字段：' + $f)
+        }
+    }
+} else {
+    Assert-True $true '（本机没装本地模型，跳过"每条都有位置字段"）'
+}
 
 # 动作：把上下文设成 32K —— 会重启服务，必须 destructive + 只有 -Apply 才真跑
 $ctxAction = @($actions | Where-Object { $_.id -eq 'local-context' })

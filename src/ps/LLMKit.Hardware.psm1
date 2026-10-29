@@ -669,7 +669,10 @@ function Get-LLMKitOllamaManifestInfo {
         [Parameter(Mandatory = $true)][string]$Tag
     )
 
-    $result = [pscustomobject]@{ tag = $Tag; found = $false; sizeGB = 0; layerCount = 0; manifestPath = '' }
+    $result = [pscustomobject]@{
+        tag = $Tag; found = $false; sizeGB = 0; layerCount = 0
+        manifestPath = ''; blobsDir = ''; missingBlobs = @(); verified = $false
+    }
     try {
         $name = $Tag
         $sizeTag = 'latest'
@@ -689,11 +692,13 @@ function Get-LLMKitOllamaManifestInfo {
         $blobDir = Join-Path $ModelRoot 'blobs'
         $total = 0
         $layers = 0
+        $missing = New-Object System.Collections.ArrayList
         foreach ($layer in @($json.layers)) {
             $digest = [string](Get-ObjectPropSafe $layer 'digest')
             if ([string]::IsNullOrWhiteSpace($digest)) { continue }
             $file = Join-Path $blobDir ('sha256-' + $digest.Replace('sha256:', ''))
             if (Test-Path -LiteralPath $file) { $total += (Get-Item -LiteralPath $file).Length }
+            else { [void]$missing.Add((Split-Path $file -Leaf)) }
             $layers++
         }
         return [pscustomobject]@{
@@ -702,12 +707,71 @@ function Get-LLMKitOllamaManifestInfo {
             sizeGB       = [math]::Round($total / 1GB, 2)
             layerCount   = $layers
             manifestPath = $manifest.FullName
+            blobsDir     = $blobDir
+            missingBlobs = @($missing)
+            # 核实：清单在、分片齐，才算"这套文件真的在这个目录里"
+            verified     = ($missing.Count -eq 0)
         }
     } catch {
         return $result
     }
 }
 
+function Get-LLMKitModelLocationRoots {
+    <#
+        模型可能落在哪些目录。Ollama 报的不一定对（用户可能改过 OLLAMA_MODELS、
+        也可能改完没重启），所以定位要**按文件系统核实**，而不是只信环境变量。
+        顺序：环境变量指向的 → 用户级注册表里的 → 默认目录。
+    #>
+    $roots = New-Object System.Collections.ArrayList
+    foreach ($candidate in @(
+            $env:OLLAMA_MODELS,
+            [Environment]::GetEnvironmentVariable('OLLAMA_MODELS', 'User'),
+            (Join-Path $env:USERPROFILE '.ollama\models')
+        )) {
+        if ([string]::IsNullOrWhiteSpace($candidate)) { continue }
+        if (-not $roots.Contains($candidate)) { [void]$roots.Add($candidate) }
+    }
+    return @($roots)
+}
+
+function Resolve-LLMKitModelLocation {
+    <#
+        找一个模型到底躺在哪：逐个候选目录去翻 manifests，找到清单就核对分片。
+        返回的 root 是**实际找到清单的那个目录**，而不是"Ollama 说的那个"。
+        这也是给用户看的"具体位置"：清单文件全路径 + 分片目录。
+    #>
+    param(
+        [Parameter(Mandatory = $true)][string]$Tag,
+        # 候选目录可覆盖（单测用；默认按环境变量 → 用户注册表 → 默认目录的顺序找）
+        [string[]]$Roots = @()
+    )
+
+    $candidates = $Roots
+    if ($null -eq $candidates -or $candidates.Count -eq 0) { $candidates = @(Get-LLMKitModelLocationRoots) }
+    foreach ($root in @($candidates)) {
+        if ([string]::IsNullOrWhiteSpace($root)) { continue }
+        if (-not (Test-Path -LiteralPath $root)) { continue }
+        $mi = Get-LLMKitOllamaManifestInfo -ModelRoot $root -Tag $Tag
+        if ($mi.found) {
+            return [pscustomobject]@{
+                tag          = $Tag
+                found        = $true
+                root         = $root
+                manifestPath = [string]$mi.manifestPath
+                blobsDir     = [string]$mi.blobsDir
+                sizeGB       = [double]$mi.sizeGB
+                layerCount   = [int]$mi.layerCount
+                missingBlobs = @($mi.missingBlobs)
+                verified     = [bool]$mi.verified
+            }
+        }
+    }
+    return [pscustomobject]@{
+        tag = $Tag; found = $false; root = ''; manifestPath = ''; blobsDir = ''
+        sizeGB = 0; layerCount = 0; missingBlobs = @(); verified = $false
+    }
+}
 function Get-LLMKitOllamaContextSetting {
     <#
         当前上下文设置：请求值（环境变量）+ 实际生效值（加载中的模型上读到的）。
@@ -870,4 +934,4 @@ function Set-LLMKitOllamaContext {
 }
 Export-ModuleMember -Function `
     'Get-LLMKitHardware', 'Get-LLMKitModelVerdict', 'Get-LLMKitModelCatalog', `
-    'Get-LLMKitOllamaStatus', 'Get-LLMKitOllamaModelRoot', 'Get-LLMKitDiskFreeGB', 'Get-LLMKitModelPullPlan', 'Invoke-LLMKitModelPull', 'Invoke-LLMKitModelRemove', 'Resolve-LLMKitOllamaExe', 'Test-LLMKitOllamaRunning', 'Get-LLMKitDiskGate', 'Test-LLMKitLocalEndpoint', 'Get-LLMKitOllamaRootInfo', 'Get-LLMKitOllamaManifestInfo', 'Get-LLMKitOllamaContextSetting', 'Set-LLMKitOllamaContext', 'Restart-LLMKitOllama'
+    'Get-LLMKitOllamaStatus', 'Get-LLMKitOllamaModelRoot', 'Get-LLMKitDiskFreeGB', 'Get-LLMKitModelPullPlan', 'Invoke-LLMKitModelPull', 'Invoke-LLMKitModelRemove', 'Resolve-LLMKitOllamaExe', 'Test-LLMKitOllamaRunning', 'Get-LLMKitDiskGate', 'Test-LLMKitLocalEndpoint', 'Get-LLMKitOllamaRootInfo', 'Get-LLMKitOllamaManifestInfo', 'Get-LLMKitModelLocationRoots', 'Resolve-LLMKitModelLocation', 'Get-LLMKitOllamaContextSetting', 'Set-LLMKitOllamaContext', 'Restart-LLMKitOllama'

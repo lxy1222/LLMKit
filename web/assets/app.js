@@ -1550,14 +1550,27 @@
         ? esc(String(hw.ramGB)) + ' GB'
         : '<span class="note">读不到（不影响显存判定，但"能不能退到 CPU 跑"就说不准了）</span>';
 
+      // 每个模型都给出**核实过的实际位置**：清单文件全路径 + 分片目录。
+      // 不直接抄 Ollama 报的目录 —— 用户可能改过 OLLAMA_MODELS 而服务没重启。
       var installedRows = (ol.models || []).map(function (m) {
-        var real = 0;
-        (d.models || []).forEach(function (x) { if (x.ollamaTag === m.name) { real = x.manifestSizeGB; } });
+        var real = Number(m.realSizeGB || 0);
         var sizeCell = real > 0 ? (esc(String(real)) + ' GB') : (esc(String(m.sizeGB)) + ' GB<span class="note">（清单没读到，用 Ollama 报的数）</span>');
-        return '<tr><td>' + mono(m.name) + '</td><td>' + sizeCell + '</td><td>' +
+        var locCell;
+        if (m.foundOnDisk) {
+          locCell = (m.verified ? pill('盘上已核实', 'ok') : pill('缺 ' + ((m.missingBlobs || []).length) + ' 个分片', 'fail')) +
+            '<div class="meta">清单：' + mono(maskUserPath(m.manifestPath || '')) + '</div>' +
+            '<div class="meta">分片：' + mono(maskUserPath(m.blobsDir || '')) + '</div>';
+        } else {
+          locCell = pill('盘上没找到', 'fail') +
+            '<div class="meta">磁盘上翻不到它的清单（可能刚被删，或模型目录被移走了）</div>';
+        }
+        return '<tr><td>' + mono(m.name) + '</td><td>' + sizeCell + '</td><td>' + locCell + '</td><td>' +
           esc(shortTime(m.modified)) + '</td>' +
           '<td><button class="tiny" data-act="local-endpoint-check" data-target="' + esc(m.name) + '">自检工具调用</button></td></tr>';
       }).join('');
+      var rootsNote = ((ol.locationRoots || []).map(function (r) {
+        return '<li>' + mono(maskUserPath(r.path)) + (r.exists ? '' : '（这个目录不存在）') + '</li>';
+      }).join(''));
       // 接入矩阵：能直连的给路径，不能直连的说原因 —— 别让用户以为"所有工具都能用本地"
       var nameOf = {};
       ((S.overview && S.overview.tools) || []).forEach(function (t) { nameOf[t.id] = t.name; });
@@ -1653,7 +1666,7 @@
             '<tr><td>已装模型</td><td>' + esc(String(ol.modelsTotalGB || 0)) + ' GB 合计（按清单算实占）</td></tr>' +
             '</tbody></table>' +
             (installedRows
-              ? '<table class="tbl"><thead><tr><th>模型</th><th>实占（按清单）</th><th>下载时间</th><th>自检</th></tr></thead><tbody>' + installedRows + '</tbody></table>'
+              ? '<table class="tbl"><thead><tr><th>模型</th><th>实占（按清单）</th><th>具体位置</th><th>下载时间</th><th>自检</th></tr></thead><tbody>' + installedRows + '</tbody></table>' + (rootsNote ? '<details><summary>找过这几个目录</summary><ul>' + rootsNote + '</ul></details>' : '')
               : '<div class="meta">还没有下过模型。下面每一档都给了拉取命令，挑能跑的那档。</div>')
           : '<div class="callout warn">还没装运行时。先装 Ollama：<a href="#/tool/ollama">Ollama 那一页</a>。' +
             '装之前也能看下面的判定 —— 它会告诉你这台机器适合下多大的模型。</div>') +
