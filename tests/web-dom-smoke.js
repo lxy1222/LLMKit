@@ -918,7 +918,11 @@ check('步骤状态跟着安装状态走', cl.indexOf('该你了') >= 0 || cl.in
   check('本地模型页标出模型目录', localHtml.indexOf('模型目录') >= 0);
   const ctxApplied = !!(locJson.ollama && locJson.ollama.contextApplied);
   const hasCtxBtn = /data-act="local-context"/.test(localHtml);
-  if (ctxApplied) {
+  // 「设成 32K」按钮挂在"已装运行时"那张表里：没装运行时就没有上下文可调，
+  // 这时要求按钮存在是错的（CI 的干净 runner 就是这种机器）。
+  if (!olInstalled) {
+    check('没装运行时：不给「设成 32K」按钮（装了才谈上下文）', !hasCtxBtn);
+  } else if (ctxApplied) {
     check('上下文已经是 32K 时不显示「设成 32K」按钮', !hasCtxBtn);
   } else {
     check('上下文没到 32K 时给出「设成 32K」按钮', hasCtxBtn);
@@ -970,6 +974,7 @@ check('步骤状态跟着安装状态走', cl.indexOf('该你了') >= 0 || cl.in
   check('没装 Ollama：切换列说明「还没有本地模型可切」', cleanHtml.indexOf('还没有本地模型可切') >= 0);
   check('没装 Ollama：判定表照旧给出（装之前也能看能跑哪档）', cleanHtml.indexOf('能跑哪一档') >= 0);
   check('没装 Ollama：仍说明上下文必须显式调到 32K', cleanHtml.indexOf('静默截断') >= 0);
+  check('没装 Ollama：不给「设成 32K」按钮（没有运行时可设）', !/data-act="local-context"/.test(cleanHtml));
   localReportOverride = null;
   setHash('#/');
   await wait('恢复真实报告', () => el('app').innerHTML.indexOf('OpenCode') >= 0);
