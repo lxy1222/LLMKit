@@ -5,29 +5,19 @@
   "note": "本地模型目录。minVramGB / minRamGB 是「能跑起来」的门槛，不是推荐值。measured 段是本项目在 RTX 3080 10GB 上的真机实测；没有 measured 的档一律在界面上标「未实测」，能力标签只用厂商分。installable=false 表示本工具不提供一键下载（体积或部署方式超出个人机范围），只作说明。",
   "groups": [
     {
-      "id": "qwen35",
-      "name": "Qwen3.5（先从这个开始）",
+      "id": "qwen",
+      "name": "Qwen 系列（先从这个开始）",
       "priority": 1,
       "vendor": "阿里通义",
       "recommended": true,
-      "scene": "日常问答 / 翻译 / 补全 / 简单 agent",
-      "note": "中文与中文编程最稳的一组，从小到大的档位都齐。2B / 4B / 9B 已在本机实测：都返回结构化工具调用；9B 是 8–12 GB 显存档的主力。",
-      "warn": "27B / 35B 需要 24 GB 以上显存，本项目未实测，分数来自厂商卡。"
-    },
-    {
-      "id": "qwen38",
-      "name": "Qwen3.8 / 3.6（24 GB 档）",
-      "priority": 2,
-      "vendor": "阿里通义",
-      "recommended": false,
-      "scene": "24 GB 显存的台式 / 工作站",
-      "note": "同门更大的版本：3.8 全能、3.6 偏编程。独立榜上 Qwen3.8 27B 的 Terminal-Bench 2.1 复现到 79.8。",
-      "warn": "本项目未实测；18 GB 下载 + 24 GB 显存门槛，笔记本基本无缘。"
+      "scene": "中文问答 / 翻译 / 补全 / 编程 agent",
+      "note": "中文与中文编程最稳的一组，从小档到大档都在这里。3.5 的 2B / 4B / 9B 已在本机实测：都返回结构化工具调用；9B 是 8–12 GB 显存档的主力。3.6 偏编程，3.8 是 24 GB 档的全能首选。",
+      "warn": "27B 以上需要 24 GB 显存（3.6 / 3.8 各 18 GB 左右），本项目未实测，分数来自厂商卡；笔记本基本无缘。"
     },
     {
       "id": "gemma4",
       "name": "Google Gemma 4",
-      "priority": 3,
+      "priority": 2,
       "vendor": "Google",
       "recommended": false,
       "scene": "需要看图 / 多模态的场景",
@@ -37,7 +27,7 @@
     {
       "id": "gptoss",
       "name": "OpenAI gpt-oss",
-      "priority": 4,
+      "priority": 3,
       "vendor": "OpenAI",
       "recommended": false,
       "scene": "工具调用要求严格的 agent",
@@ -47,7 +37,7 @@
     {
       "id": "muse",
       "name": "Meta Muse Glimmer",
-      "priority": 5,
+      "priority": 4,
       "vendor": "Meta",
       "recommended": false,
       "scene": "24 GB 显存的本地常驻智能体",
@@ -57,7 +47,7 @@
     {
       "id": "devstral",
       "name": "Mistral Devstral",
-      "priority": 6,
+      "priority": 5,
       "vendor": "Mistral",
       "recommended": false,
       "scene": "编程，体积比同级 Qwen 小",
@@ -78,7 +68,8 @@
   "models": [
     {
       "id": "qwen35-2b",
-      "groupId": "qwen35",
+      "groupId": "qwen",
+      "generation": "3.5",
       "name": "Qwen3.5 2B",
       "vendor": "阿里通义",
       "ollamaTag": "qwen3.5:2b",
@@ -96,7 +87,8 @@
     },
     {
       "id": "qwen35-4b",
-      "groupId": "qwen35",
+      "groupId": "qwen",
+      "generation": "3.5",
       "name": "Qwen3.5 4B",
       "vendor": "阿里通义",
       "ollamaTag": "qwen3.5:4b",
@@ -123,7 +115,8 @@
     },
     {
       "id": "qwen35-9b",
-      "groupId": "qwen35",
+      "groupId": "qwen",
+      "generation": "3.5",
       "name": "Qwen3.5 9B",
       "vendor": "阿里通义",
       "ollamaTag": "qwen3.5:9b",
@@ -150,7 +143,8 @@
     },
     {
       "id": "qwen35-27b",
-      "groupId": "qwen35",
+      "groupId": "qwen",
+      "generation": "3.5",
       "name": "Qwen3.5 27B",
       "vendor": "阿里通义",
       "ollamaTag": "qwen3.5:27b",
@@ -168,7 +162,8 @@
     },
     {
       "id": "qwen35-35b",
-      "groupId": "qwen35",
+      "groupId": "qwen",
+      "generation": "3.5",
       "name": "Qwen3.5 35B",
       "vendor": "阿里通义",
       "ollamaTag": "qwen3.5:35b",
@@ -186,7 +181,8 @@
     },
     {
       "id": "qwen38-27b",
-      "groupId": "qwen38",
+      "groupId": "qwen",
+      "generation": "3.8",
       "name": "Qwen3.8 27B",
       "vendor": "阿里通义",
       "ollamaTag": "qwen3.8:27b",
@@ -204,7 +200,8 @@
     },
     {
       "id": "qwen36-27b",
-      "groupId": "qwen38",
+      "groupId": "qwen",
+      "generation": "3.6",
       "name": "Qwen3.6 27B（偏编程）",
       "vendor": "阿里通义",
       "ollamaTag": "qwen3.6:27b",

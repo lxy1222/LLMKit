@@ -678,7 +678,7 @@ check('步骤状态跟着安装状态走', cl.indexOf('该你了') >= 0 || cl.in
   check('本地模型页有「你的机器」一段', localHtml.indexOf('你的机器') >= 0);
   check('本地模型页报显存与读数来源', localHtml.indexOf('显存') >= 0 && localHtml.indexOf('读数来源') >= 0);
   check('本地模型页报磁盘余量', localHtml.indexOf('磁盘余量') >= 0);
-  check('本地模型页给出可复制的拉取命令', /ollama pull /.test(localHtml));
+  check('本地模型页每档都有「详情」入口', /data-detail=/.test(localHtml));
   check('本地模型页给出判定（能跑 / 跑不动 / 说不准）',
     localHtml.indexOf('能跑') >= 0 || localHtml.indexOf('跑不动') >= 0 || localHtml.indexOf('说不准') >= 0);
   check('本地模型页写出「上下文必须调到 32K」', localHtml.indexOf('静默截断') >= 0);
@@ -707,7 +707,7 @@ check('步骤状态跟着安装状态走', cl.indexOf('该你了') >= 0 || cl.in
   // --- 分组：按品牌/系列分开，Qwen 组在最前，每组有说明 ---
   const groups = locJson.modelGroups || [];
   check('本地模型页按品牌分组渲染', groups.length >= 3, '组数 ' + groups.length);
-  check('第一组是 Qwen3.5 且标了推荐', groups[0] && groups[0].id === 'qwen35' && groups[0].recommended === true,
+  check('第一组是 Qwen 系列且标了推荐', groups[0] && groups[0].id === 'qwen' && groups[0].recommended === true,
     groups[0] ? groups[0].id + '/' + groups[0].recommended : '(无)');
   check('每组都有一句说明', groups.every((g) => String(g.note || '').length > 10));
   check('每组都给出"本机能跑几档"', groups.every((g) => typeof g.okCount === 'number'));
@@ -723,7 +723,7 @@ check('步骤状态跟着安装状态走', cl.indexOf('该你了') >= 0 || cl.in
   if (readonlyGroup) {
     check('只作说明的组里没有任何下载按钮',
       readonlyGroup.models.every((m) => localHtml.indexOf('data-act="model-pull" data-target="' + m.ollamaTag + '"') < 0));
-    check('只作说明的档标了「不支持一键下载」', localHtml.indexOf('不支持一键下载') >= 0);
+    check('只作说明的档标了「不提供下载」', localHtml.indexOf('不提供下载') >= 0);
   } else {
     check('（没有"只作说明"的组，跳过该断言）', true);
   }
@@ -777,6 +777,29 @@ check('步骤状态跟着安装状态走', cl.indexOf('该你了') >= 0 || cl.in
     check('（本机没装本地模型，跳过具体位置断言）', true);
   }
   check('页面注明找过哪几个目录（可展开）', localHtml.indexOf('找过这几个目录') >= 0);
+
+  // --- 组内改成表格：共同字段只在组头说一次，逐档横向对比 ---
+  check('能力档已收成表格列（模型/参数/体积/需显存/判定/能力/操作）',
+    localHtml.indexOf('<th>需显存</th>') >= 0 && localHtml.indexOf('<th>判定</th>') >= 0 && localHtml.indexOf('<th>能力</th>') >= 0);
+  check('组头给出「本组共同」字段（重复信息只说一次）', localHtml.indexOf('本组共同：') >= 0);
+  check('能跑得动的档不再在判定列里重复"需要显存 N GB"',
+    !/可以全量放进显卡<\/div><\/td>/.test(localHtml) || localHtml.indexOf('可以全量放进显卡') >= 0);
+  // 详情：点开看实测数据 / 未实测说明 / 拉取命令
+  const detailModel = locModels[0];
+  if (detailModel) {
+    el('modal').classList.remove('show');
+    clickDocBtn({ 'data-detail': detailModel.ollamaTag });
+    await wait('详情弹窗出现', () => el('modal').classList.contains('show'), 15000);
+    const dtext = el('modalBody').innerHTML;
+    check('点「详情」弹出这个模型的详情', el('modal').classList.contains('show'));
+    check('详情里有拉取命令', dtext.indexOf('ollama pull ') >= 0);
+    check('详情里标了实测或未实测', dtext.indexOf('本机实测') >= 0 || dtext.indexOf('未实测') >= 0);
+    el('modalCancel').onclick();
+    await new Promise((r) => setTimeout(r, 100));
+    check('关掉详情后弹窗收起', !el('modal').classList.contains('show'));
+  } else {
+    check('（本机没有模型档，跳过详情断言）', true);
+  }
   // --- 切换：只有 OpenCode / Codex 能自动写，其余明说"只给片段" ---
   const swTargets = (locJson.switchTargets || []);
   check('本地模型页给出可自动切换的目标', swTargets.length === 2, JSON.stringify(swTargets.map((s) => s.id)));

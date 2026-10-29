@@ -1607,60 +1607,88 @@
         return '<tr><td>' + esc(nameOf[e.id] || e.id) + '</td><td>' + yn + '</td><td>' + mono(e.protocol || '') + '</td><td>' + how + '</td><td>' + swCell + '</td></tr>';
       }).join('');
 
-      // 单个档位的卡片。分组渲染时每张卡都走这里，避免两处逻辑走偏。
-      function modelCardHtml(m) {
-        var acts = '';
-        if (!m.installable) {
-          acts = '<div class="acts">' + pill('不支持一键下载', 'warn') +
-            '<span class="note">' + esc(m.installNote || '这个模型的体积或部署方式超出个人机范围') + '</span></div>';
-        } else if (m.verdict === 'no') {
-          acts = '<div class="acts"><button disabled title="' + esc(m.verdictReason) + '">下载</button>' +
-            '<span class="note">这台机器跑不动这一档，所以不给下载按钮 —— 别白下 ' + esc(String(m.sizeGB)) + ' GB</span></div>';
-        } else if (m.downloaded) {
-          acts = '<div class="acts">' +
-            '<button data-act="model-remove" data-target="' + esc(m.ollamaTag) + '">删除（释放约 ' + esc(String(m.sizeGB)) + ' GB）</button>' +
-            '<span class="note">这一步会真的删文件；删完可以用 ollama pull 装回来，删了什么记在 out\\state\\model-removals.log</span></div>';
-        } else {
-          acts = '<div class="acts">' +
-            '<button class="primary" data-act="model-pull" data-target="' + esc(m.ollamaTag) + '">下载（约 ' + esc(String(m.sizeGB)) + ' GB）</button>' +
-            '<span class="note">' + (m.verdict === 'slow' ? '显存不够、会退到 CPU 跑，慢；' : '') +
-            '下载前会先算清占多大、磁盘够不够</span></div>';
-        }
-        return '<div class="card">' +
-          '<div class="acts" style="justify-content:space-between;align-items:center">' +
-          '<h3 style="margin:0">' + esc(m.name) + '</h3>' +
-          '<span>' + localVerdictPill(m.verdict) +
-          (m.downloaded ? pill('已下载', 'ok') : '') +
-          (m.unmeasured ? pill('未实测', 'warn') : pill('已实测', 'ok')) + '</span></div>' +
-          '<div class="meta">' + esc(m.params) + ' / ' + esc(m.quant) + ' / 下载 ' + esc(String(m.sizeGB)) + ' GB' +
-          ' / 需要显存 ' + esc(String(m.minVramGB)) + ' GB / 上下文 ' + esc(String(m.context)) +
-          ' / ' + esc(m.license) + ' / 能力：' + esc(localCapabilityText(m.capability)) + '</div>' +
-          '<div class="meta">模型名：' + mono(m.ollamaTag) + ' <button class="tiny" data-copy="ollama pull ' + esc(m.ollamaTag) + '">复制拉取命令</button></div>' +
-          '<div class="callout">' + esc(m.verdictReason) + '</div>' +
-          '<div class="meta">' + esc(m.capabilityNote || '') + '</div>' +
-          acts +
-          '</div>';
+      // 能力档 → 短标签（表格里放不下长句）
+      function capabilityLabel(c) {
+        if (c === 'agent-ok') { return '能跑 agent'; }
+        if (c === 'agent-weak') { return '简单 agent'; }
+        return '问答补全';
       }
 
-      // 按品牌/系列分组渲染：组顺序只认配置里的 priority，组内按「需要显存 → 体积」。
-      // 分组的意义是让用户看懂"这几档是一家的、另一家是什么路数"，而不是一长条平铺。
+      // 判定 → 表格里的一句话。能跑就不再多嘴（"需要显存 N GB" 已经在上一列了），
+      // 只有能跑但慢 / 跑不动 / 说不准 才把原因摊开。
+      function verdictNote(m) {
+        if (m.verdict === 'ok') { return ''; }
+        return esc(m.verdictReason || '');
+      }
+
+      // 一行一个档位。共同字段（量化/上下文/许可证/厂商）在组头说过了，这里不再重复。
+      function modelRowHtml(g, m) {
+        var nameCell = '<b>' + esc(m.name) + '</b>';
+        // 只有组内混了代际（例如 Qwen 组同时有 3.5/3.6/3.8）才挂代际标签；
+        // 单一代际的组每行都挂一个一样的小标签，纯属噪音。
+        if (m.generation && g._mixedGen) { nameCell += ' ' + pill('第 ' + m.generation + ' 代', 'warn'); }
+        if (m.downloaded) { nameCell += ' ' + pill('已下载', 'ok'); }
+        nameCell += m.unmeasured ? ' ' + pill('未实测', 'warn') : ' ' + pill('已实测', 'ok');
+
+        var paramCell = esc(m.params);
+        if (!g.common || !g.common.quant) { paramCell += '<div class="meta">' + esc(m.quant) + '</div>'; }
+
+        var name2 = m.name;
+        var acts = '';
+        if (!m.installable) {
+          acts = pill('不提供下载', 'warn') + '<button class="tiny" data-detail="' + esc(m.ollamaTag) + '">详情</button>';
+        } else if (m.verdict === 'no') {
+          acts = '<button disabled title="' + esc(m.verdictReason) + '">下载</button>' +
+            '<button class="tiny" data-detail="' + esc(m.ollamaTag) + '">详情</button>';
+        } else if (m.downloaded) {
+          acts = '<button class="tiny" data-act="model-remove" data-target="' + esc(m.ollamaTag) + '">删除</button>' +
+            '<button class="tiny" data-detail="' + esc(m.ollamaTag) + '">详情</button>';
+        } else {
+          acts = '<button class="tiny primary" data-act="model-pull" data-target="' + esc(m.ollamaTag) + '">下载</button>' +
+            '<button class="tiny" data-detail="' + esc(m.ollamaTag) + '">详情</button>';
+        }
+        var note = verdictNote(m);
+        return '<tr><td>' + nameCell + '</td>' +
+          '<td>' + paramCell + '</td>' +
+          '<td>' + esc(String(m.sizeGB)) + ' GB</td>' +
+          '<td>' + esc(String(m.minVramGB)) + ' GB</td>' +
+          '<td>' + localVerdictPill(m.verdict) + (note ? '<div class="meta">' + note + '</div>' : '') + '</td>' +
+          '<td>' + esc(capabilityLabel(m.capability)) + '</td>' +
+          '<td style="white-space:nowrap">' + acts + '</td></tr>';
+      }
+
+      // 按品牌/系列分组：组头说"这家是什么路数、本机能跑几档、共同字段是什么"，
+      // 组内用表格逐档对比 —— 这样同门档位能横着比，共有信息只说一次。
       var groupHtml = (d.modelGroups || []).map(function (g) {
+        var commonBits = [];
+        var c = g.common || {};
+        if (c.vendor) { commonBits.push(esc(c.vendor)); }
+        if (c.quant) { commonBits.push('量化 ' + esc(c.quant)); }
+        if (c.context) { commonBits.push(esc(String(c.context)) + ' 上下文'); }
+        if (c.license) { commonBits.push(esc(c.license)); }
         var head = '<div style="margin-top:22px">' +
           '<div class="acts" style="align-items:center">' +
           '<h3 style="margin:0">' + esc(g.name) + '</h3>' +
           (g.recommended ? pill('推荐先用这个', 'ok') : '') +
           (g.okCount > 0 ? pill('本机能跑 ' + g.okCount + ' 档', 'ok') : pill('本机都跑不动', 'warn')) +
           (g.noCount > 0 ? pill('跑不动 ' + g.noCount + ' 档', 'fail') : '') +
-          '<span class="note">' + esc(g.vendor) + (g.scene ? ' · ' + esc(g.scene) : '') + '</span>' +
+          (g.scene ? '<span class="note">' + esc(g.scene) + '</span>' : '') +
           '</div>' +
           '<div class="meta">' + esc(g.note) + '</div>' +
           (g.warn ? '<div class="callout">' + esc(g.warn) + '</div>' : '') +
+          (commonBits.length ? '<div class="meta">本组共同：' + commonBits.join(' · ') + '</div>' : '') +
           '</div>';
-        return head + '<div class="grid">' + g.models.map(modelCardHtml).join('') + '</div>';
+        var gens = [];
+        g.models.forEach(function (m) { if (m.generation && gens.indexOf(m.generation) < 0) { gens.push(m.generation); } });
+        g._mixedGen = gens.length > 1;
+        var rows = g.models.map(function (m) { return modelRowHtml(g, m); }).join('');
+        return head +
+          '<table class="tbl"><thead><tr><th>模型</th><th>参数</th><th>体积</th><th>需显存</th><th>判定</th><th>能力</th><th>操作</th></tr></thead>' +
+          '<tbody>' + rows + '</tbody></table>';
       }).join('');
 
       // 配置里没有分组信息时（旧配置/被改坏），退回平铺，不能让整页空掉
-      var modelCards = groupHtml || (d.models || []).map(modelCardHtml).join('');
+      var modelCards = groupHtml;
 
       $('app').innerHTML =
         '<section><h2>本地模型</h2>' +
@@ -1809,6 +1837,37 @@
     }
     if (b.hasAttribute('data-restore')) {
       act('restore', { targetId: b.getAttribute('data-restore') });
+      return;
+    }
+    if (b.hasAttribute('data-detail')) {
+      var dtag = b.getAttribute('data-detail');
+      var mdl = null;
+      ((S.local && S.local.models) || []).forEach(function (x) { if (x.ollamaTag === dtag) { mdl = x; } });
+      if (!mdl) { toast('读不到这个模型的详情'); return; }
+      var bits = [];
+      bits.push('<div class="meta">' + esc(mdl.params) + ' / ' + esc(mdl.quant) + ' / 下载 ' + esc(String(mdl.sizeGB)) + ' GB' +
+        ' / 需要显存 ' + esc(String(mdl.minVramGB)) + ' GB / 上下文 ' + esc(String(mdl.context)) +
+        ' / ' + esc(mdl.license) + '</div>');
+      bits.push('<div class="callout">' + esc(mdl.verdictReason || '') + '</div>');
+      if (mdl.capabilityNote) { bits.push('<div class="meta">' + esc(mdl.capabilityNote) + '</div>'); }
+      if (mdl.installNote) { bits.push('<div class="callout">' + esc(mdl.installNote) + '</div>'); }
+      if (mdl.measured) {
+        var mm = mdl.measured;
+        bits.push('<div class="meta"><b>本机实测</b>（' + esc(String(mm.at || '')) + '，' + esc(String(mm.gpu || '')) + '）：' +
+          (mm.tokPerSec ? esc(String(mm.tokPerSec)) + ' tok/s；' : '') +
+          (mm.vramGB ? '显存 ' + esc(String(mm.vramGB)) + ' GB；' : '') +
+          (mm.vramGBAt32k ? '32K 上下文时 ' + esc(String(mm.vramGBAt32k)) + ' GB；' : '') +
+          (mm.gpuSplit ? esc(String(mm.gpuSplit)) + '；' : '') +
+          '工具调用 ' + (mm.toolCalls ? '✅ 会' : '❌ 不会') + '</div>');
+      } else {
+        bits.push('<div class="meta"><b>未实测</b>：以下信息来自厂商模型卡，本项目没有在这台机器上跑过它。</div>');
+      }
+      bits.push('<div class="meta">模型名：' + mono(mdl.ollamaTag) +
+        ' <button class="tiny" data-copy="ollama pull ' + esc(mdl.ollamaTag) + '">复制拉取命令</button></div>');
+      if (mdl.sourceUrl) {
+        bits.push('<div class="meta">来源：<a href="' + esc(mdl.sourceUrl) + '" target="_blank" rel="noreferrer">' + esc(mdl.sourceUrl) + '</a></div>');
+      }
+      showModal(mdl.name + ' · ' + (mdl.downloaded ? '已下载' : '未下载'), bits.join(''), '关闭', function () { hideModal(); });
       return;
     }
     if (b.hasAttribute('data-switch')) {

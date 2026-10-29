@@ -1098,6 +1098,7 @@ function Get-LLMKitLocalReport {
                         downloaded     = ($installedNames -contains $tag)
                         manifestSizeGB = [double]$(if ($manifestSizes.ContainsKey($tag)) { $manifestSizes[$tag] } else { 0 })
                         groupId        = [string](Get-ObjectProp -Object $m -Name 'groupId')
+                        generation     = [string](Get-ObjectProp -Object $m -Name 'generation')
                         # 没有 measured 段 = 本项目没实测过，界面上要标出来
                         unmeasured     = ($null -eq (Get-ObjectProp -Object $m -Name 'measured'))
                         # installable=false：体积或部署方式超出个人机范围，只作说明、不给下载按钮
@@ -1171,9 +1172,17 @@ function Get-LLMKitLocalReport {
                     $gid = [string](Get-ObjectProp -Object $_ -Name 'id')
                     $members = @($items | Where-Object { $_.groupId -eq $gid } |
                         Sort-Object { [double]$_.minVramGB }, { [double]$_.sizeGB })
+                    # 组内取值的唯一值才提到组头（量化/上下文/许可证/厂商都一样时才说一次，
+                    # 不一样就留空、让表格逐行展示）。这是"去重"的唯一依据，不靠手写。
+                    $common = [ordered]@{}
+                    foreach ($f in @('quant', 'context', 'license', 'vendor')) {
+                        $vals = @($members | ForEach-Object { [string]($_.$f) } | Sort-Object -Unique)
+                        if (@($members).Count -gt 0 -and $vals.Count -eq 1) { $common[$f] = $vals[0] } else { $common[$f] = '' }
+                    }
                     [pscustomobject]([ordered]@{
                             id          = $gid
                             name        = [string](Get-ObjectProp -Object $_ -Name 'name')
+                            common      = [pscustomobject]$common
                             vendor      = [string](Get-ObjectProp -Object $_ -Name 'vendor')
                             recommended = [bool](Get-ObjectProp -Object $_ -Name 'recommended')
                             scene       = [string](Get-ObjectProp -Object $_ -Name 'scene')

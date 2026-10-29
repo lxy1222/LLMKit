@@ -1102,8 +1102,8 @@ Assert-Equal $groupIds.Count (@($groupIds | Sort-Object -Unique).Count) '组 id 
 $groupPrios = @($groupCat | ForEach-Object { [int](Get-ObjectProp -Object $_ -Name 'priority') })
 Assert-Equal $groupPrios.Count (@($groupPrios | Sort-Object -Unique).Count) '组 priority 无重复（顺序才是确定的）'
 $firstByPrio = @($groupCat | Sort-Object { [int](Get-ObjectProp -Object $_ -Name 'priority') })[0]
-Assert-Equal 'qwen35' ([string](Get-ObjectProp -Object $firstByPrio -Name 'id')) 'Qwen3.5 组排第一'
-Assert-True ([bool](Get-ObjectProp -Object $firstByPrio -Name 'recommended')) 'Qwen3.5 组标了推荐'
+Assert-Equal 'qwen' ([string](Get-ObjectProp -Object $firstByPrio -Name 'id')) 'Qwen 系列组排第一'
+Assert-True ([bool](Get-ObjectProp -Object $firstByPrio -Name 'recommended')) 'Qwen 系列组标了推荐'
 foreach ($g in $groupCat) {
     $gid = [string](Get-ObjectProp -Object $g -Name 'id')
     Assert-True ([string](Get-ObjectProp -Object $g -Name 'name')).Length -gt 0 ($gid + ' 有组名')
@@ -1154,6 +1154,25 @@ foreach ($m in @($repG.models)) {
 }
 $notInstallable = @($repG.models | Where-Object { -not $_.installable })
 Assert-True ($notInstallable.Count -ge 1) ('目录里有"只作说明"的档（实际 ' + $notInstallable.Count + ' 档）')
+# ---- 组内共同字段：只有全组一致时才提到组头，否则留空让表格逐行展示 ----
+$qwenGroup = @($repG.modelGroups | Where-Object { $_.id -eq 'qwen' })[0]
+Assert-True ($null -ne $qwenGroup) '报告里有 Qwen 系列组'
+Assert-Equal 'Q4_K_M' ([string]$qwenGroup.common.quant) 'Qwen 组量化一致时才提到组头'
+Assert-Equal '32768' ([string]$qwenGroup.common.context) 'Qwen 组上下文一致'
+Assert-Equal 'Apache-2.0' ([string]$qwenGroup.common.license) 'Qwen 组许可证一致'
+Assert-Equal '阿里通义' ([string]$qwenGroup.common.vendor) 'Qwen 组厂商一致'
+$roGroup = @($repG.modelGroups | Where-Object { $_.id -eq 'readonly' })[0]
+Assert-True ($null -ne $roGroup) '报告里有"只作说明"组'
+Assert-Equal '' ([string]$roGroup.common.quant) '组内量化不一致时共同字段留空（不硬凑）'
+Assert-Equal '' ([string]$roGroup.common.license) '组内许可证不一致时共同字段留空'
+Assert-Equal '32768' ([string]$roGroup.common.context) '但一致的字段（上下文）仍然提出来'
+
+# ---- 代际标签：Qwen 组里 3.5 / 3.6 / 3.8 都要标出来 ----
+$gens = @($qwenGroup.models | ForEach-Object { [string]$_.generation } | Where-Object { $_ } | Sort-Object -Unique)
+Assert-True ($gens -contains '3.5') 'Qwen 组有 3.5 代'
+Assert-True ($gens -contains '3.6') 'Qwen 组有 3.6 代'
+Assert-True ($gens -contains '3.8') 'Qwen 组有 3.8 代'
+Assert-True ($qwenGroup.models.Count -ge 5) ('Qwen 组合并后至少 5 档（实际 ' + $qwenGroup.models.Count + '）')
 Write-Host ('-' * 60) -ForegroundColor DarkGray
 if ($script:Fail -eq 0) {
     Write-Host ('全部通过：' + $script:Pass + ' 项') -ForegroundColor Green
