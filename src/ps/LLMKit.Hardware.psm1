@@ -18,6 +18,12 @@
         （本机就设在 E: 盘）。磁盘余量要按它所在的盘算。
 #>
 
+# Ollama 的默认端口。这是**产品协议常量**，不是本机信息（每台机器都一样）。
+# 只在这里写一次：要改就改这一处，别在十几处 URL 里各写一遍。
+$script:OllamaPort = 11434
+# 默认上下文：Ollama 自己的默认只有 4096，且超出会静默截断，所以我们统一抬到 32K。
+# 真正生效的值优先从 config/models.json 的 contextHint 读，这里只是兜底。
+$script:DefaultContextLength = 32768
 $script:DisplayClassPath = 'HKLM:\SYSTEM\CurrentControlSet\Control\Class\{4d36e968-e325-11ce-bfc1-08002be10318}'
 
 function Get-LLMKitOllamaModelRoot {
@@ -255,7 +261,7 @@ function Get-LLMKitOllamaStatus {
     $running = $false
     $serverVersion = ''
     try {
-        $v = Invoke-RestMethod -Uri 'http://127.0.0.1:11434/api/version' -TimeoutSec 2 -ErrorAction Stop
+        $v = Invoke-RestMethod -Uri ('http://127.0.0.1:' + $script:OllamaPort + '/api/version') -TimeoutSec 2 -ErrorAction Stop
         $running = $true
         $serverVersion = [string]$v.version
     } catch { }
@@ -263,7 +269,7 @@ function Get-LLMKitOllamaStatus {
     $models = @()
     if ($running) {
         try {
-            $ps = Invoke-RestMethod -Uri 'http://127.0.0.1:11434/api/tags' -TimeoutSec 4 -ErrorAction Stop
+            $ps = Invoke-RestMethod -Uri ('http://127.0.0.1:' + $script:OllamaPort + '/api/tags') -TimeoutSec 4 -ErrorAction Stop
             foreach ($m in @($ps.models)) {
                 $sizeGB = 0
                 if ($null -ne $m.size) { $sizeGB = [math]::Round([double]$m.size / 1GB, 2) }
@@ -282,7 +288,7 @@ function Get-LLMKitOllamaStatus {
         version          = $version
         running          = $running
         serverVersion    = $serverVersion
-        baseUrl          = 'http://127.0.0.1:11434/v1'
+        baseUrl          = ('http://127.0.0.1:' + $script:OllamaPort + '/v1')
         modelRoot        = Get-LLMKitOllamaModelRoot
         models           = @($models)
     }
@@ -368,7 +374,7 @@ function Get-ObjectPropSafe {
 
 function Test-LLMKitOllamaRunning {
     try {
-        [void](Invoke-RestMethod -Uri 'http://127.0.0.1:11434/api/version' -TimeoutSec 2 -ErrorAction Stop)
+        [void](Invoke-RestMethod -Uri ('http://127.0.0.1:' + $script:OllamaPort + '/api/version') -TimeoutSec 2 -ErrorAction Stop)
         return $true
     } catch { return $false }
 }
@@ -390,7 +396,7 @@ function Invoke-LLMKitOllamaNdjson {
     }
 
     $bytes = [System.Text.Encoding]::UTF8.GetBytes(($Body | ConvertTo-Json -Depth 6 -Compress))
-    $req = [System.Net.HttpWebRequest]::Create('http://127.0.0.1:11434' + $Path)
+    $req = [System.Net.HttpWebRequest]::Create('http://127.0.0.1:' + $script:OllamaPort + $Path)
     $req.Method = 'POST'
     $req.ContentType = 'application/json'
     $req.ContentLength = $bytes.Length
@@ -550,7 +556,7 @@ function Invoke-LLMKitModelRemove {
 
     $bytes = [System.Text.Encoding]::UTF8.GetBytes((@{ model = $Tag } | ConvertTo-Json -Compress))
     try {
-        [void](Invoke-WebRequest -Uri 'http://127.0.0.1:11434/api/delete' -Method Delete -Body $bytes -ContentType 'application/json' -UseBasicParsing -TimeoutSec 120)
+        [void](Invoke-WebRequest -Uri ('http://127.0.0.1:' + $script:OllamaPort + '/api/delete') -Method Delete -Body $bytes -ContentType 'application/json' -UseBasicParsing -TimeoutSec 120)
     } catch {
         throw ('删除失败：' + $_.Exception.Message)
     }
@@ -584,7 +590,7 @@ function Test-LLMKitLocalEndpoint {
     #>
     param(
         [string]$Tag = '',
-        [int]$ContextLength = 32768
+        [int]$ContextLength = $script:DefaultContextLength
     )
 
     if (-not (Test-LLMKitOllamaRunning)) {
@@ -622,7 +628,7 @@ function Test-LLMKitLocalEndpoint {
     $bytes = [System.Text.Encoding]::UTF8.GetBytes(($body | ConvertTo-Json -Depth 10))
     $sw = [System.Diagnostics.Stopwatch]::StartNew()
     try {
-        $resp = Invoke-WebRequest -Uri 'http://127.0.0.1:11434/v1/chat/completions' -Method Post -Body $bytes `
+        $resp = Invoke-WebRequest -Uri ('http://127.0.0.1:' + $script:OllamaPort + '/v1/chat/completions') -Method Post -Body $bytes `
             -ContentType 'application/json; charset=utf-8' -UseBasicParsing -TimeoutSec 600
     } catch {
         $sw.Stop()
@@ -787,6 +793,34 @@ function Resolve-LLMKitModelLocation {
         sizeGB = 0; layerCount = 0; missingBlobs = @(); verified = $false
     }
 }
+function Get-LLMKitOllamaEndpointUrl {
+    <#
+        本地端点的完整 URL。端口只在上面的 $script:OllamaPort 里写一次，
+        别的模块（LocalConfig、界面）都从这里取，别各自写 11434。
+    #>
+    return ('http://127.0.0.1:' + $script:OllamaPort + '/v1')
+}
+function Get-LLMKitLocalContextHint {
+    <#
+        期望的默认上下文：从 config/models.json 的 contextHint 读，读不到才用兜底值。
+        放在这里是为了让"要设成多少"只有一个来源 —— 之前服务层的命令行、
+        报告字段、界面文案各写了一个 32768，改一个就会不一致。
+    #>
+    param([string]$ConfigRoot)
+
+    if (-not [string]::IsNullOrWhiteSpace($ConfigRoot)) {
+        $path = Join-Path $ConfigRoot 'config\models.json'
+        try {
+            if (Test-Path -LiteralPath $path) {
+                $data = Get-Content -LiteralPath $path -Raw -Encoding UTF8 | ConvertFrom-Json
+                $hint = Get-ObjectPropSafe $data 'contextHint'
+                $val = 0
+                if ($null -ne $hint -and [int]::TryParse([string]$hint, [ref]$val) -and $val -ge 4096) { return $val }
+            }
+        } catch { }
+    }
+    return $script:DefaultContextLength
+}
 function Get-LLMKitOllamaContextSetting {
     <#
         当前上下文设置：请求值（环境变量）+ 实际生效值（加载中的模型上读到的）。
@@ -801,9 +835,9 @@ function Get-LLMKitOllamaContextSetting {
     $effective = 0
     $running = $false
     try {
-        $v = Invoke-RestMethod -Uri 'http://127.0.0.1:11434/api/version' -TimeoutSec 2 -ErrorAction Stop
+        $v = Invoke-RestMethod -Uri ('http://127.0.0.1:' + $script:OllamaPort + '/api/version') -TimeoutSec 2 -ErrorAction Stop
         $running = $true
-        $ps = Invoke-RestMethod -Uri 'http://127.0.0.1:11434/api/ps' -TimeoutSec 4 -ErrorAction Stop
+        $ps = Invoke-RestMethod -Uri ('http://127.0.0.1:' + $script:OllamaPort + '/api/ps') -TimeoutSec 4 -ErrorAction Stop
         foreach ($m in @($ps.models)) {
             if ([int]$m.context_length -gt $effective) { $effective = [int]$m.context_length }
         }
@@ -814,7 +848,7 @@ function Get-LLMKitOllamaContextSetting {
         requestedRaw   = [string]$requested
         effective      = $effective
         serverRunning  = $running
-        applied        = ($requestedValue -ge 32768 -and ($effective -eq 0 -or $effective -ge 32768))
+        applied        = ($requestedValue -ge $script:DefaultContextLength -and ($effective -eq 0 -or $effective -ge $script:DefaultContextLength))
     }
 }
 
@@ -856,7 +890,7 @@ function Restart-LLMKitOllama {
     $deadline = (Get-Date).AddSeconds($TimeoutSec)
     while ((Get-Date) -lt $deadline) {
         try {
-            [void](Invoke-RestMethod -Uri 'http://127.0.0.1:11434/api/version' -TimeoutSec 2 -ErrorAction Stop)
+            [void](Invoke-RestMethod -Uri ('http://127.0.0.1:' + $script:OllamaPort + '/api/version') -TimeoutSec 2 -ErrorAction Stop)
             return $mode
         } catch { Start-Sleep -Milliseconds 800 }
     }
@@ -875,7 +909,7 @@ function Set-LLMKitOllamaContext {
         失败就回滚：旧值写回（或在原本没有时删掉），再重启一次，如实报失败。
     #>
     param(
-        [int]$Value = 32768,
+        [int]$Value = $script:DefaultContextLength,
         [string]$StateDir = '',
         [scriptblock]$OnLine
     )
@@ -919,7 +953,7 @@ function Set-LLMKitOllamaContext {
     if (-not [string]::IsNullOrWhiteSpace($tag)) {
         try {
             $bytes = [System.Text.Encoding]::UTF8.GetBytes((@{ model = $tag; prompt = 'hi'; stream = $false; options = @{ num_predict = 1 } } | ConvertTo-Json -Depth 6))
-            [void](Invoke-WebRequest -Uri 'http://127.0.0.1:11434/api/generate' -Method Post -Body $bytes -ContentType 'application/json; charset=utf-8' -UseBasicParsing -TimeoutSec 300)
+            [void](Invoke-WebRequest -Uri ('http://127.0.0.1:' + $script:OllamaPort + '/api/generate') -Method Post -Body $bytes -ContentType 'application/json; charset=utf-8' -UseBasicParsing -TimeoutSec 300)
             $after = Get-LLMKitOllamaContextSetting
             $effective = [int]$after.effective
         } catch {
@@ -949,4 +983,4 @@ function Set-LLMKitOllamaContext {
 }
 Export-ModuleMember -Function `
     'Get-LLMKitHardware', 'Get-LLMKitModelVerdict', 'Get-LLMKitModelCatalog', 'Get-LLMKitModelGroupCatalog', `
-    'Get-LLMKitOllamaStatus', 'Get-LLMKitOllamaModelRoot', 'Get-LLMKitDiskFreeGB', 'Get-LLMKitModelPullPlan', 'Invoke-LLMKitModelPull', 'Invoke-LLMKitModelRemove', 'Resolve-LLMKitOllamaExe', 'Test-LLMKitOllamaRunning', 'Get-LLMKitDiskGate', 'Test-LLMKitLocalEndpoint', 'Get-LLMKitOllamaRootInfo', 'Get-LLMKitOllamaManifestInfo', 'Get-LLMKitModelLocationRoots', 'Resolve-LLMKitModelLocation', 'Get-LLMKitOllamaContextSetting', 'Set-LLMKitOllamaContext', 'Restart-LLMKitOllama'
+    'Get-LLMKitOllamaStatus', 'Get-LLMKitOllamaModelRoot', 'Get-LLMKitDiskFreeGB', 'Get-LLMKitModelPullPlan', 'Invoke-LLMKitModelPull', 'Invoke-LLMKitModelRemove', 'Resolve-LLMKitOllamaExe', 'Test-LLMKitOllamaRunning', 'Get-LLMKitDiskGate', 'Test-LLMKitLocalEndpoint', 'Get-LLMKitOllamaRootInfo', 'Get-LLMKitOllamaManifestInfo', 'Get-LLMKitModelLocationRoots', 'Resolve-LLMKitModelLocation', 'Get-LLMKitOllamaContextSetting', 'Get-LLMKitLocalContextHint', 'Get-LLMKitOllamaEndpointUrl', 'Set-LLMKitOllamaContext', 'Restart-LLMKitOllama'

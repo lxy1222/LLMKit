@@ -114,7 +114,7 @@ function New-LLMKitOpencodeConfigText {
         [AllowEmptyString()][string]$OriginalText,
         [Parameter(Mandatory = $true)][string]$ModelTag,
         [string[]]$AllTags = @(),
-        [string]$BaseUrl = 'http://127.0.0.1:11434/v1'
+        [string]$BaseUrl = ''
     )
 
     $obj = $null
@@ -124,6 +124,7 @@ function New-LLMKitOpencodeConfigText {
         $obj = $OriginalText | ConvertFrom-Json
     }
 
+    if ([string]::IsNullOrWhiteSpace($BaseUrl)) { $BaseUrl = Get-LLMKitOllamaEndpointUrl }
     $models = [ordered]@{}
     $tags = New-Object System.Collections.ArrayList
     [void]$tags.Add($ModelTag)
@@ -160,9 +161,10 @@ function New-LLMKitCodexConfigText {
     param(
         [AllowEmptyString()][string]$OriginalText,
         [Parameter(Mandatory = $true)][string]$ModelTag,
-        [string]$BaseUrl = 'http://127.0.0.1:11434/v1'
+        [string]$BaseUrl = ''
     )
 
+    if ([string]::IsNullOrWhiteSpace($BaseUrl)) { $BaseUrl = Get-LLMKitOllamaEndpointUrl }
     $lines = @()
     if (-not [string]::IsNullOrWhiteSpace($OriginalText)) { $lines = @($OriginalText -split "`r?`n") }
 
@@ -226,7 +228,7 @@ function Get-LLMKitLocalSwitchPlan {
         [Parameter(Mandatory = $true)][string]$Target,
         [Parameter(Mandatory = $true)][string]$ModelTag,
         [string[]]$AllTags = @(),
-        [string]$BaseUrl = 'http://127.0.0.1:11434/v1'
+        [string]$BaseUrl = ''
     )
 
     $path = Get-LLMKitLocalSwitchTargetPath -Target $Target
@@ -262,12 +264,13 @@ function Set-LLMKitLocalSwitch {
         [Parameter(Mandatory = $true)][string]$Target,
         [Parameter(Mandatory = $true)][string]$ModelTag,
         [string[]]$AllTags = @(),
-        [string]$BaseUrl = 'http://127.0.0.1:11434/v1',
+        [string]$BaseUrl = '',
         [string]$StateDir = '',
         [switch]$Apply,
         [scriptblock]$OnLine
     )
 
+    if ([string]::IsNullOrWhiteSpace($BaseUrl)) { $BaseUrl = Get-LLMKitOllamaEndpointUrl }
     $plan = Get-LLMKitLocalSwitchPlan -Target $Target -ModelTag $ModelTag -AllTags $AllTags -BaseUrl $BaseUrl
     $emit = { param($s) if ($OnLine) { & $OnLine $s } }
     & $emit ('目标：' + $Target + ' → ' + $plan.configPath)
@@ -299,6 +302,8 @@ function Set-LLMKitLocalSwitch {
 
     if (-not [string]::IsNullOrWhiteSpace($StateDir)) {
         try {
+            # 目标配置原本不存在时不会走到备份那一步，state 目录可能还没建 —— 先补上
+            if (-not (Test-Path -LiteralPath $StateDir)) { [void](New-Item -ItemType Directory -Path $StateDir -Force) }
             Add-Content -LiteralPath (Join-Path $StateDir 'local-switch.log') -Encoding UTF8 `
                 -Value ((Get-Date).ToString('yyyy-MM-dd HH:mm:ss') + '  切到本地：' + $Target + ' → ' + $ModelTag + '（配置 ' + $plan.configPath + '，备份 ' + $backup + '）')
         } catch { }
@@ -377,6 +382,7 @@ function Undo-LLMKitLocalSwitch {
 
     if (-not [string]::IsNullOrWhiteSpace($StateDir)) {
         try {
+            if (-not (Test-Path -LiteralPath $StateDir)) { [void](New-Item -ItemType Directory -Path $StateDir -Force) }
             Add-Content -LiteralPath (Join-Path $StateDir 'local-switch.log') -Encoding UTF8 `
                 -Value ((Get-Date).ToString('yyyy-MM-dd HH:mm:ss') + '  切回原样：' + $Target + '（用备份 ' + $backup + '）')
         } catch { }

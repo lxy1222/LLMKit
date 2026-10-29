@@ -69,7 +69,7 @@
         '<li>如果你在这之后又手动改过这个文件，这些改动也会被还原覆盖 —— 想保留就先自己备份。</li>';
     }
     if (actionId === 'local-context') {
-      return '<li>会改用户级环境变量 <b>OLLAMA_CONTEXT_LENGTH=32768</b>，并<b>重启一次 Ollama</b>（正在跑的任务会被中断）。</li>' +
+      return '<li>会改用户级环境变量 <b>OLLAMA_CONTEXT_LENGTH=' + esc(String(contextHint() || '（从配置读）')) + '</b>，并<b>重启一次 Ollama</b>（正在跑的任务会被中断）。</li>' +
         '<li>重启后会真的加载一个模型、读回生效值来验证；验证不过会<b>自动改回原值</b>并告诉你。</li>';
     }
     if (actionId === 'model-remove') {
@@ -1137,7 +1137,7 @@
     }
     var steps = (e.steps || []).map(function (s) { return '<li>' + esc(s) + '</li>'; }).join('');
     return '<section><h2>本地模型（可选）</h2>' +
-      '<div class="meta">端点：' + mono('http://127.0.0.1:11434/v1') + '（OpenAI 兼容，本地无 key）' +
+      '<div class="meta">端点：' + mono(endpointUrl()) + '（OpenAI 兼容，本地无 key）' +
       (e.protocol ? ' · 协议：' + mono(e.protocol) : '') + '</div>' +
       (steps ? '<ol>' + steps + '</ol>' : '') +
       '<div class="meta">配置文件：' + mono(maskUserPath(e.configPath || '')) + '</div>' +
@@ -1511,7 +1511,7 @@
     var eff = Number(ol.contextEffective || 0);
     var bits = '';
     if (eff > 0) {
-      bits += (eff >= 32768 ? pill('生效 ' + eff, 'ok') : pill('只有 ' + eff, 'warn'));
+      bits += (eff >= contextHint() ? pill('生效 ' + eff, 'ok') : pill('只有 ' + eff, 'warn'));
       bits += '<span class="meta">（加载中的模型实际拿到的）</span>';
     } else {
       bits += '<span class="meta">没有模型在跑，读不到生效值</span>';
@@ -1524,6 +1524,15 @@
       bits += '<div class="meta">已经是 32K：智能体不传 num_ctx 也能拿到足够上下文。</div>';
     }
     return bits;
+  }
+  // 端点与期望上下文都从服务端报告读：界面不该自带"11434"或"32768"这种数字，
+  // 否则配置一改，界面和真实行为就对不上了。
+  function endpointUrl() {
+    var ol = (S.local && S.local.ollama) || {};
+    return ol.baseUrl || '（未启动）';
+  }
+  function contextHint() {
+    return Number((S.local && S.local.contextHint) || 0);
   }
   function renderLocal() {
     $('app').innerHTML = '<div class="card">读取硬件与模型状态中…</div>';
@@ -1724,7 +1733,7 @@
 
         '<div class="callout warn"><b>上下文必须显式调到 32K。</b>' +
         'Ollama 默认只给 4096，超了会<b>静默截断</b>（实测：9630 字符的输入只处理了 2050 个 token，不报任何错）。' +
-        '本工具在各处都用 ' + esc(String(d.contextHint || 32768)) + '。</div>' +
+        '本工具在各处都用 ' + esc(String(d.contextHint || 32768)) + '（值来自 config/models.json 的 contextHint）。</div>' +
 
         '</section>' +
 
@@ -1735,7 +1744,7 @@
         '</section>' +
 
         '<section><h2>接进各智能体</h2>' +
-        '<div class="meta">本地端点就是 ' + mono('http://127.0.0.1:11434/v1') + '（OpenAI 兼容，没有 key）。能不能直连，取决于那个工具说不说 OpenAI 这套协议。</div>' +
+        '<div class="meta">本地端点就是 ' + mono(endpointUrl()) + '（OpenAI 兼容，没有 key）。能不能直连，取决于那个工具说不说 OpenAI 这套协议。</div>' +
         '<table class="tbl"><thead><tr><th>工具</th><th>能直连</th><th>协议</th><th>怎么接</th><th>切换</th></tr></thead><tbody>' + endpointRows + '</tbody></table>' +
         '<div class="meta">除 Claude Code 外，本工具不代写这些配置 —— 它们是嵌套结构，盲写会把你已有的渠道配置搞坏。各工具自己的页面里给了可复制的片段。</div>' +
         '</section>' +

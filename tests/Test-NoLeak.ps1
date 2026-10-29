@@ -81,7 +81,52 @@ try {
     Check '.gitignore 忽略 out/' ($gi -match '(?m)^out/?\s*$')
     Check '.gitignore 忽略 build/dist/' ($gi -match '(?m)^build/dist/?\s*$')
 
-    # ---- 5) 诊断报告不是仓库文件（它们是本机快照）----
+    # ---- 5) 产品代码里不许写死"本机专属"的东西 ----
+    # 这一类是"改一次就忘了"的典型：本机装在哪、什么显卡、调成多少，
+    # 一旦被抄进代码，换台机器就变成错的结论。允许存在的位置只有实测记录与配置。
+    $prodFiles = @($files | Where-Object {
+            $_.FullName -notmatch '\\tests\\' -and
+            $_.FullName -notmatch '\\out\\' -and
+            $_.FullName -notmatch '\\build\\dist\\' -and
+            $_.Extension -in @('.ps1', '.psm1', '.js', '.json', '.html', '.css')
+        })
+    function Get-ProdHits([string]$Pattern) {
+        return @($prodFiles | Select-String -Pattern $Pattern -ErrorAction SilentlyContinue)
+    }
+
+    # 本机模型目录 / 安装盘（E:\Program Files 之类）出现在任何地方都不行
+    $machinePaths = @(Get-ProdHits '[A-Za-z]:\\Program Files\\model|E:\\Program Files')
+    Check ('产品代码里没有本机专属目录（' + $machinePaths.Count + ' 处）') ($machinePaths.Count -eq 0) `
+    (($machinePaths | ForEach-Object { $_.Filename + ':' + $_.LineNumber + ':' + $_.Line.Trim() }) -join ' ; ')
+
+    # 显卡型号只允许作为"实测记录"出现在配置里（models.json 的 measured / tools.json 的 notes）
+    $gpuHits = @(Get-ProdHits 'RTX 3080|GeForce RTX')
+    $gpuBad = @($gpuHits | Where-Object { $_.Path -notmatch 'config\\(models|tools)\.json$' })
+    Check ('显卡型号只出现在配置的实测记录里（越界 ' + $gpuBad.Count + ' 处）') ($gpuBad.Count -eq 0) `
+    (($gpuBad | ForEach-Object { $_.Filename + ':' + $_.LineNumber }) -join ' ; ')
+
+    # Ollama 端口只允许串在模块常量与配置里出现；代码里别各写一份 11434
+    $portHits = @(Get-ProdHits '11434')
+    $portBad = @($portHits | Where-Object {
+            $_.Path -notmatch 'LLMKit\.Hardware\.psm1$' -and
+            $_.Path -notmatch '\\config\\'
+        })
+    # 注释里解释"这不是数字来源"的那一行不算
+    $portBad = @($portBad | Where-Object { -not ($_.Path -match 'app\.js$' -and $_.Line -match '"11434"或"32768"') })
+    Check ('Ollama 端口的字面量只在模块常量与配置里（越界 ' + $portBad.Count + ' 处）') ($portBad.Count -eq 0) `
+    (($portBad | ForEach-Object { $_.Filename + ':' + $_.LineNumber }) -join ' ; ')
+
+    # 32K 上下文：允许在配置（contextHint/各档 context）、模块常量、以及界面那句兜底里
+    $ctxHits = @(Get-ProdHits '32768')
+    $ctxBad = @($ctxHits | Where-Object {
+            $_.Path -notmatch '\\config\\models\.json$' -and
+            $_.Path -notmatch 'LLMKit\.Hardware\.psm1$' -and
+            -not ($_.Path -match 'app\.js$' -and $_.Line -match '\|\|\s*32768|"11434"或"32768"|环境变量是 32768')
+        })
+    Check ('32K 上下文只从配置/模块常量来（越界 ' + $ctxBad.Count + ' 处）') ($ctxBad.Count -eq 0) `
+    (($ctxBad | ForEach-Object { $_.Filename + ':' + $_.LineNumber + ':' + $_.Line.Trim() }) -join ' ; ')
+
+    # ---- 6) 诊断报告不是仓库文件（它们是本机快照）----
     $reportFiles = @($files | Where-Object { $_.Name -match '^(env-report|diagnostic-)' })
     Check ('仓库里没有诊断报告快照（' + $reportFiles.Count + ' 个）') ($reportFiles.Count -eq 0)
 }

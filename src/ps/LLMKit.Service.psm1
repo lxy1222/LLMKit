@@ -242,7 +242,8 @@ function Get-LLMKitActionCommandLine {
             if ($TargetId) { & $add '-LocalModelTag'; & $add $TargetId }
         }
         'local-context' {
-            & $add '-SetLocalContext'; & $add '32768'
+            # 目标值来自 config/models.json 的 contextHint —— 别在两处各写一个 32K
+            & $add '-SetLocalContext'; & $add ([string](Get-LLMKitLocalContextHint -ConfigRoot $ConfigRoot))
         }
         'tool-local-switch' {
             if ([string]::IsNullOrWhiteSpace($ModelTag)) { throw '切到本地需要指定模型 tag。' }
@@ -1101,6 +1102,8 @@ function Get-LLMKitLocalReport {
                         generation     = [string](Get-ObjectProp -Object $m -Name 'generation')
                         # 没有 measured 段 = 本项目没实测过，界面上要标出来
                         unmeasured     = ($null -eq (Get-ObjectProp -Object $m -Name 'measured'))
+                        # 实测数据要透出来：界面的详情弹窗靠它显示 tok/s / 显存 / 会不会用工具
+                        measured       = (Get-ObjectProp -Object $m -Name 'measured')
                         # installable=false：体积或部署方式超出个人机范围，只作说明、不给下载按钮
                         installable    = -not ($m.PSObject.Properties['installable'] -and $m.installable -eq $false)
                         installNote    = [string](Get-ObjectProp -Object $m -Name 'installNote')
@@ -1112,7 +1115,7 @@ function Get-LLMKitLocalReport {
             schemaVersion = '0.1.0'
             engine        = 'LLMKit.Service/' + $script:ServiceVersion
             generatedAt   = (Get-Date).ToString('o')
-            contextHint   = 32768
+            contextHint   = [int](Get-LLMKitLocalContextHint -ConfigRoot $ConfigRoot)
             hardware      = [pscustomobject]([ordered]@{
                     gpus           = @($hardware.gpus | ForEach-Object {
                             [pscustomobject]([ordered]@{

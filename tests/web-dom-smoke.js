@@ -727,6 +727,28 @@ check('步骤状态跟着安装状态走', cl.indexOf('该你了') >= 0 || cl.in
   } else {
     check('（没有"只作说明"的组，跳过该断言）', true);
   }
+  // --- DeepSeek 组：开源权重 R1 系列，必须提示"不适合当工具层" ---
+  const dsGroup = groups.filter((g) => g.id === 'deepseek')[0];
+  check('有 DeepSeek 组且排在第二位', !!dsGroup && groups.indexOf(dsGroup) === 1,
+    dsGroup ? '位置 ' + groups.indexOf(dsGroup) : '(无)');
+  if (dsGroup) {
+    check('DeepSeek 组给出至少 4 档', dsGroup.models.length >= 4, '档数 ' + dsGroup.models.length);
+    check('DeepSeek 组的说明里写了"工具调用"这件事',
+      String(dsGroup.warn || '').indexOf('工具调用') >= 0);
+    check('页面印出了 DeepSeek 组名', localHtml.indexOf('DeepSeek 开源权重') >= 0);
+    const r1 = dsGroup.models.filter((m) => m.ollamaTag === 'deepseek-r1:7b')[0];
+    check('deepseek-r1:7b 标为已实测', !!r1 && r1.unmeasured === false);
+    if (r1) {
+      el('modal').classList.remove('show');
+      clickDocBtn({ 'data-detail': r1.ollamaTag });
+      await wait('R1 详情弹窗', () => el('modal').classList.contains('show'), 15000);
+      const r1text = el('modalBody').innerHTML;
+      check('R1 详情里如实写"工具调用 ❌ 不会"', r1text.indexOf('工具调用') >= 0 && r1text.indexOf('❌') >= 0);
+      check('R1 详情里给出实测速度', /tok\/s/.test(r1text));
+      el('modalCancel').onclick();
+      await new Promise((r) => setTimeout(r, 100));
+    }
+  }
   const dlModel = locModels.filter((m) => !m.downloaded && m.verdict !== 'no')[0];
   const rmModel = locModels.filter((m) => m.downloaded)[0];
   blockRun = true;

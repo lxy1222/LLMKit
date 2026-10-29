@@ -1173,6 +1173,33 @@ Assert-True ($gens -contains '3.5') 'Qwen 组有 3.5 代'
 Assert-True ($gens -contains '3.6') 'Qwen 组有 3.6 代'
 Assert-True ($gens -contains '3.8') 'Qwen 组有 3.8 代'
 Assert-True ($qwenGroup.models.Count -ge 5) ('Qwen 组合并后至少 5 档（实际 ' + $qwenGroup.models.Count + '）')
+# ---- DeepSeek 组：开源权重 R1 系列 + 只作说明的旗舰 ----
+$dsGroup = @($repG.modelGroups | Where-Object { $_.id -eq 'deepseek' })[0]
+Assert-True ($null -ne $dsGroup) '报告里有 DeepSeek 组'
+Assert-True ($dsGroup.models.Count -ge 4) ('DeepSeek 组至少 4 档（实际 ' + $dsGroup.models.Count + '）')
+Assert-True ([string]$dsGroup.warn -match '工具调用') 'DeepSeek 组必须提示"不适合当工具层"这件事'
+$r1tags = @($dsGroup.models | ForEach-Object { $_.ollamaTag })
+Assert-True ($r1tags -contains 'deepseek-r1:1.5b') '有最小的 1.5B 档（核显可跑）'
+Assert-True ($r1tags -contains 'deepseek-r1:7b') '有 7B 档（本项目实测过的那一档）'
+# 实测数据要如实反映"不会用工具"——这是这条组存在的意义
+$r1hit = @($dsGroup.models | Where-Object { $_.ollamaTag -eq 'deepseek-r1:7b' })
+Assert-Equal 1 $r1hit.Count '能找到 deepseek-r1:7b 这一档'
+$r1 = $r1hit[0]
+Assert-True (-not [bool]$r1.unmeasured) 'deepseek-r1:7b 标为已实测'
+$r1Measured = $r1.measured
+Assert-True ($null -ne $r1Measured) '详情里带着实测数据（界面靠它显示 tok/s 与会不会用工具）'
+Assert-Equal 'False' ([string]$r1Measured.toolCalls) '实测记录里 toolCalls=False（它确实不返回工具调用）'
+Assert-True ([double]$r1Measured.tokPerSec -gt 0) '实测记录里带速度'
+Assert-Equal 'chat-only' ([string]$r1.capability) '既然不会用工具，能力就只能是问答补全'
+
+# 只作说明组里要能放下 DeepSeek 的旗舰（云端 / 404 GB 权重）
+$roGroup2 = @($repG.modelGroups | Where-Object { $_.id -eq 'readonly' })[0]
+$roNames = @($roGroup2.models | ForEach-Object { $_.name })
+Assert-True (@($roGroup2.models | Where-Object { -not $_.installable }).Count -ge 3) '只作说明组至少 3 档'
+Assert-True (($roNames -join ' ') -match 'V3.1|V4') '只作说明组里有 DeepSeek 的大模型'
+foreach ($m in @($roGroup2.models)) {
+    Assert-True (-not [bool]$m.installable) ('只作说明组的每一档都必须是不可下载：' + $m.name)
+}
 Write-Host ('-' * 60) -ForegroundColor DarkGray
 if ($script:Fail -eq 0) {
     Write-Host ('全部通过：' + $script:Pass + ' 项') -ForegroundColor Green
