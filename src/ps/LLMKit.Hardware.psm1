@@ -530,6 +530,44 @@ function Invoke-LLMKitModelPull {
     return [pscustomobject]@{ tag = $Tag; sizeGB = $plan.sizeGB; verified = $true }
 }
 
+function Unload-LLMKitOllamaModel {
+    <#
+        把一个模型从内存里卸掉（keep_alive=0），并等到 /api/ps 里真的没有它。
+
+        为什么必须做：模型还在加载状态时，Ollama 的 /api/delete 直接回 500 且响应体为空
+        （本机实测复现）。用户看到的就是"删除失败：500"，完全看不出原因。
+        卸载是幂等的：本来没加载就什么都不做。
+    #>
+    param([Parameter(Mandatory = $true)][string]$Tag, [int]$TimeoutSec = 20)
+
+    $loaded = $false
+    try {
+        $ps = Invoke-RestMethod -Uri ('http://127.0.0.1:' + $script:OllamaPort + '/api/ps') -TimeoutSec 5 -ErrorAction Stop
+        $loaded = @($ps.models | Where-Object { [string]$_.name -eq $Tag }).Count -gt 0
+    } catch { return $false }
+    if (-not $loaded) { return $false }
+
+    try {
+        $bytes = [System.Text.Encoding]::UTF8.GetBytes((@{ model = $Tag; keep_alive = 0; stream = $false } | ConvertTo-Json -Compress))
+        [void](Invoke-WebRequest -Uri ('http://127.0.0.1:' + $script:OllamaPort + '/api/generate') -Method Post -Body $bytes -ContentType 'application/json' -UseBasicParsing -TimeoutSec 60)
+    } catch {
+        # 有些模型（例如纯 embedding）不接受 /api/generate，再试 /api/embed
+        try {
+            $bytes2 = [System.Text.Encoding]::UTF8.GetBytes((@{ model = $Tag; input = 'x'; keep_alive = 0 } | ConvertTo-Json -Compress))
+            [void](Invoke-WebRequest -Uri ('http://127.0.0.1:' + $script:OllamaPort + '/api/embed') -Method Post -Body $bytes2 -ContentType 'application/json' -UseBasicParsing -TimeoutSec 60)
+        } catch { }
+    }
+
+    $deadline = (Get-Date).AddSeconds($TimeoutSec)
+    while ((Get-Date) -lt $deadline) {
+        try {
+            $ps2 = Invoke-RestMethod -Uri ('http://127.0.0.1:' + $script:OllamaPort + '/api/ps') -TimeoutSec 5 -ErrorAction Stop
+            if (@($ps2.models | Where-Object { [string]$_.name -eq $Tag }).Count -eq 0) { return $true }
+        } catch { }
+        Start-Sleep -Milliseconds 500
+    }
+    return $false
+}
 function Invoke-LLMKitModelRemove {
     <#
         删除一个本地模型。**这一步会真的删文件**（用户已确认过这条规则）：
@@ -554,11 +592,40 @@ function Invoke-LLMKitModelRemove {
 
     if ($OnLine) { & $OnLine ('准备删除 ' + $Tag + '（' + $sizeGB + ' GB）；删完可以用 ollama pull ' + $Tag + ' 重新装回来') }
 
+    # 先把它从内存里卸掉：模型还在加载状态时 /api/delete 会返回 500（实测复现过）。
+    Unload-LLMKitOllamaModel -Tag $Tag | Out-Null
+
     $bytes = [System.Text.Encoding]::UTF8.GetBytes((@{ model = $Tag } | ConvertTo-Json -Compress))
+    $apiError = ''
     try {
         [void](Invoke-WebRequest -Uri ('http://127.0.0.1:' + $script:OllamaPort + '/api/delete') -Method Delete -Body $bytes -ContentType 'application/json' -UseBasicParsing -TimeoutSec 120)
     } catch {
-        throw ('删除失败：' + $_.Exception.Message)
+        # 把 HTTP 状态码与服务端响应体一起带出来 —— 只说"500"没有排查价值
+        $resp = $null
+        try { $resp = $_.Exception.Response } catch { }
+        $code = 0
+        if ($resp) { try { $code = [int]$resp.StatusCode } catch { } }
+        $detail = ''
+        try {
+            if ($resp) { $sr = New-Object System.IO.StreamReader($resp.GetResponseStream(), [System.Text.Encoding]::UTF8); $detail = $sr.ReadToEnd(); $sr.Dispose() }
+        } catch { }
+        $apiError = 'HTTP ' + $code + $(if ($detail) { '：' + $detail.Trim() } else { '（响应体是空的）' })
+        if ($OnLine) { & $OnLine ('接口删除失败（' + $apiError + '），改用 ollama rm 再试一次…') }
+    }
+
+    if (-not [string]::IsNullOrEmpty($apiError)) {
+        # 退路：CLI 走的是另一条代码路径，权限/加载状态的处理可能不同
+        $exe = Resolve-LLMKitOllamaExe
+        if (-not [string]::IsNullOrWhiteSpace($exe)) {
+            try {
+                $out = & $exe rm $Tag 2>&1 | Out-String
+                if ($LASTEXITCODE -ne 0) { $apiError = $apiError + '；ollama rm 也失败：' + $out.Trim() }
+                elseif ($OnLine) { & $OnLine ('  ollama rm 成功') ; $apiError = '' }
+            } catch { $apiError = $apiError + '；ollama rm 抛错：' + $_.Exception.Message }
+        }
+        if (-not [string]::IsNullOrEmpty($apiError)) {
+            throw ('删除失败：' + $apiError + '。常见原因：Ollama 服务不是以「安装它的那个用户」身份在跑、或模型目录（' + (Get-LLMKitOllamaModelRoot) + '）没有写权限。可以重启 Ollama 后再试，或自己执行 ollama rm ' + $Tag)
+        }
     }
 
     $after = Get-LLMKitOllamaStatus
@@ -983,4 +1050,4 @@ function Set-LLMKitOllamaContext {
 }
 Export-ModuleMember -Function `
     'Get-LLMKitHardware', 'Get-LLMKitModelVerdict', 'Get-LLMKitModelCatalog', 'Get-LLMKitModelGroupCatalog', `
-    'Get-LLMKitOllamaStatus', 'Get-LLMKitOllamaModelRoot', 'Get-LLMKitDiskFreeGB', 'Get-LLMKitModelPullPlan', 'Invoke-LLMKitModelPull', 'Invoke-LLMKitModelRemove', 'Resolve-LLMKitOllamaExe', 'Test-LLMKitOllamaRunning', 'Get-LLMKitDiskGate', 'Test-LLMKitLocalEndpoint', 'Get-LLMKitOllamaRootInfo', 'Get-LLMKitOllamaManifestInfo', 'Get-LLMKitModelLocationRoots', 'Resolve-LLMKitModelLocation', 'Get-LLMKitOllamaContextSetting', 'Get-LLMKitLocalContextHint', 'Get-LLMKitOllamaEndpointUrl', 'Set-LLMKitOllamaContext', 'Restart-LLMKitOllama'
+    'Get-LLMKitOllamaStatus', 'Get-LLMKitOllamaModelRoot', 'Get-LLMKitDiskFreeGB', 'Get-LLMKitModelPullPlan', 'Invoke-LLMKitModelPull', 'Invoke-LLMKitModelRemove', 'Unload-LLMKitOllamaModel', 'Resolve-LLMKitOllamaExe', 'Test-LLMKitOllamaRunning', 'Get-LLMKitDiskGate', 'Test-LLMKitLocalEndpoint', 'Get-LLMKitOllamaRootInfo', 'Get-LLMKitOllamaManifestInfo', 'Get-LLMKitModelLocationRoots', 'Resolve-LLMKitModelLocation', 'Get-LLMKitOllamaContextSetting', 'Get-LLMKitLocalContextHint', 'Get-LLMKitOllamaEndpointUrl', 'Set-LLMKitOllamaContext', 'Restart-LLMKitOllama'

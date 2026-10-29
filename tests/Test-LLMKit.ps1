@@ -1200,6 +1200,28 @@ Assert-True (($roNames -join ' ') -match 'V3.1|V4') '只作说明组里有 DeepS
 foreach ($m in @($roGroup2.models)) {
     Assert-True (-not [bool]$m.installable) ('只作说明组的每一档都必须是不可下载：' + $m.name)
 }
+# ======================================================================
+Write-Host ''
+Write-Host '本地模型删除：先卸载、失败时把原因带出来' -ForegroundColor Cyan
+# ======================================================================
+# 真实教训：模型还在内存里时 /api/delete 返回 500 且响应体为空 —— 界面上只看到
+# "删除失败：500"，完全无法排查。所以删除前要卸载，失败时要把状态码与响应体摊开。
+Assert-True ($null -ne (Get-Command -Name 'Unload-LLMKitOllamaModel' -ErrorAction SilentlyContinue)) '有卸载模型的函数'
+Assert-True ($null -ne (Get-Command -Name 'Invoke-LLMKitModelRemove' -ErrorAction SilentlyContinue)) '有删除模型的函数'
+# 服务没在跑时：卸载要安静地返回 false（不能抛），删除要给出明确原因
+$unloadProbe = $null
+try { $unloadProbe = Unload-LLMKitOllamaModel -Tag 'whatever:1b' } catch { $unloadProbe = 'threw' }
+Assert-True ($unloadProbe -ne 'threw') '服务没在跑时，卸载函数不抛异常'
+Assert-True ($unloadProbe -eq $false) '服务没在跑时，卸载函数返回 false'
+$removeThrew = $false
+$removeMsg = ''
+try { [void](Invoke-LLMKitModelRemove -Tag 'whatever:1b') } catch { $removeThrew = $true; $removeMsg = [string]$_.Exception.Message }
+Assert-True $removeThrew '服务没在跑时，删除会明确报错'
+Assert-True ($removeMsg.Length -gt 5) ('错误信息是可读的（实际：' + $removeMsg + '）')
+$hw = Get-Content (Join-Path $ProjectRoot 'src\ps\LLMKit.Hardware.psm1') -Raw -Encoding UTF8
+Assert-True ($hw -match 'Unload-LLMKitOllamaModel -Tag') '删除流程里真的先调了卸载'
+Assert-True ($hw -match 'HTTP '' \+ \$code') '删除失败时会把 HTTP 状态码带进错误信息'
+Assert-True ($hw -match 'ollama rm') '接口删除失败后有 ollama rm 兜底'
 Write-Host ('-' * 60) -ForegroundColor DarkGray
 if ($script:Fail -eq 0) {
     Write-Host ('全部通过：' + $script:Pass + ' 项') -ForegroundColor Green
