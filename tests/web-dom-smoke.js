@@ -628,6 +628,35 @@ check('步骤状态跟着安装状态走', cl.indexOf('该你了') >= 0 || cl.in
   check('渠道页说明了去智能体页配置', pv.indexOf('配置在各自智能体页里') >= 0);
   check('渠道页不含任何 key 值', pv.indexOf('sk-') < 0);
 
+  // --- 参考价格：按币种两张表，只列事实 ---
+  console.log('参考价格');
+  check('渠道页有「参考价格」一节', el('app').innerHTML.indexOf('参考价格') >= 0);
+  const priceHtml = el('app').innerHTML;
+  // 有数字的币种要出表；全都没抄到的币种，至少在"未收录"列表里标出币种 —— 不能糊成一片
+  const cfgP0 = await (await fetch(BASE + '/api/providers')).json();
+  const prows = cfgP0.providers || [];
+  const cnyRows = prows.filter((x) => x.pricing && x.pricing.currency === 'CNY' && (x.pricing.rows || []).length > 0).length;
+  const usdRows = prows.filter((x) => x.pricing && x.pricing.currency === 'USD' && (x.pricing.rows || []).length > 0).length;
+  const cnyOk = cnyRows === 0 ? priceHtml.indexOf('人民币（CNY）') < 0 : priceHtml.indexOf('人民币（CNY）') >= 0;
+  const usdOk = usdRows === 0 ? priceHtml.indexOf('（美元）') >= 0 : priceHtml.indexOf('美元（USD）') >= 0;
+  check('价格按币种分得清（有数字出表，没数字在未收录里标币种）', cnyOk && usdOk,
+    'CNY 行 ' + cnyRows + ' / USD 行 ' + usdRows);
+  check('写了"不构成比价或选购建议"', priceHtml.indexOf('不构成比价或选购建议') >= 0);
+  check('写明不做汇率换算', priceHtml.indexOf('不做汇率换算') >= 0);
+  check('每张表都有抄录日期', priceHtml.indexOf('抄录于') >= 0);
+  check('给出了计价单位（每百万 tokens）', priceHtml.indexOf('每百万 tokens') >= 0);
+  check('DeepSeek 的价格行渲染出来了', priceHtml.indexOf('deepseek-flash') >= 0 && priceHtml.indexOf('¥ 2') >= 0);
+  const cfgPrice = await (await fetch(BASE + '/api/providers')).json();
+  const withRows = (cfgPrice.providers || []).filter((x) => x.pricing && (x.pricing.rows || []).length > 0);
+  const withoutRows = (cfgPrice.providers || []).filter((x) => x.pricing && !(x.pricing.rows || []).length);
+  check('有价格的渠道至少 3 家', withRows.length >= 3, '实际 ' + withRows.length);
+  if (withoutRows.length) {
+    check('未收录的渠道被单独列出来并说明原因', priceHtml.indexOf('未收录') >= 0);
+  } else {
+    check('（所有渠道都抄到了价格，跳过未收录断言）', true);
+  }
+  check('价格表里没有"最便宜/推荐买"这类结论',
+    priceHtml.indexOf('最便宜') < 0 && priceHtml.indexOf('推荐购买') < 0);
   console.log('旧的配置页地址');
   setHash('#/config?provider=deepseek');
   await wait('配置搬走页渲染', () => el('app').innerHTML.indexOf('配置搬走了') >= 0, 20000);

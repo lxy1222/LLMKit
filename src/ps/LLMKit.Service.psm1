@@ -716,6 +716,9 @@ function Get-LLMKitProviderList {
                     # 官方接入说明按渠道存（例如 DeepSeek 给 Claude Code 的 9 个环境变量），原样透传给前端
                     integrations = (Get-ObjectProp -Object $p -Name 'integrations')
                     verified = [bool](Get-ObjectProp -Object $p -Name 'verified')
+                    # 参考价格：原样透传（currency / unit / checkedAt / sourceUrl / rows / unavailable）
+                    # 界面据此分行币种渲染，自己不做任何换算或"谁更便宜"的推断
+                    pricing = (Get-ObjectProp -Object $p -Name 'pricing')
                 }))
     }
     return @($out)

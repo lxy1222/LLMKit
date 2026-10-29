@@ -1,6 +1,6 @@
 {
   "schemaVersion": "0.1.0",
-  "updatedAt": "2026-01-01",
+  "updatedAt": "2026-10-29",
   "_note": "渠道目录。本文件设计为可远程更新：新增渠道、修正 base_url、调整模型名都不需要重新发版。base_url 与 model 字段标 verified=false 的表示尚未在本机实测，安装器在写入配置前应做一次真实连通性验证，验证通过再落盘。",
   "_keyPolicy": "工具只提供跳转链接，不内置、不代发、不代充任何 key。",
   "providers": [
@@ -8,7 +8,11 @@
       "id": "deepseek",
       "name": "DeepSeek 深度求索",
       "region": "cn",
-      "tags": ["国内直连", "便宜", "推荐首选"],
+      "tags": [
+        "国内直连",
+        "便宜",
+        "推荐首选"
+      ],
       "registerUrl": "https://platform.deepseek.com/",
       "keyUrl": "https://platform.deepseek.com/api_keys",
       "docsUrl": "https://api-docs.deepseek.com/",
@@ -27,15 +31,42 @@
           "checkedAt": "2026-10-17",
           "note": "照官方原文给 Windows 写法。本工具不写 ~/.claude/settings.json，key 也不经手、不保存。",
           "env": [
-            { "name": "ANTHROPIC_BASE_URL", "value": "https://api.deepseek.com/anthropic" },
-            { "name": "ANTHROPIC_AUTH_TOKEN", "value": "<你的 DeepSeek API Key>" },
-            { "name": "ANTHROPIC_MODEL", "value": "deepseek-flash[1m]" },
-            { "name": "ANTHROPIC_DEFAULT_OPUS_MODEL", "value": "deepseek-flash[1m]" },
-            { "name": "ANTHROPIC_DEFAULT_SONNET_MODEL", "value": "deepseek-flash[1m]" },
-            { "name": "ANTHROPIC_DEFAULT_HAIKU_MODEL", "value": "deepseek-flash" },
-            { "name": "CLAUDE_CODE_SUBAGENT_MODEL", "value": "deepseek-flash" },
-            { "name": "CLAUDE_CODE_EFFORT_LEVEL", "value": "max" },
-            { "name": "CLAUDE_CODE_AUTO_COMPACT_WINDOW", "value": "786432" }
+            {
+              "name": "ANTHROPIC_BASE_URL",
+              "value": "https://api.deepseek.com/anthropic"
+            },
+            {
+              "name": "ANTHROPIC_AUTH_TOKEN",
+              "value": "<你的 DeepSeek API Key>"
+            },
+            {
+              "name": "ANTHROPIC_MODEL",
+              "value": "deepseek-flash[1m]"
+            },
+            {
+              "name": "ANTHROPIC_DEFAULT_OPUS_MODEL",
+              "value": "deepseek-flash[1m]"
+            },
+            {
+              "name": "ANTHROPIC_DEFAULT_SONNET_MODEL",
+              "value": "deepseek-flash[1m]"
+            },
+            {
+              "name": "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+              "value": "deepseek-flash"
+            },
+            {
+              "name": "CLAUDE_CODE_SUBAGENT_MODEL",
+              "value": "deepseek-flash"
+            },
+            {
+              "name": "CLAUDE_CODE_EFFORT_LEVEL",
+              "value": "max"
+            },
+            {
+              "name": "CLAUDE_CODE_AUTO_COMPACT_WINDOW",
+              "value": "786432"
+            }
           ]
         },
         "opencode": {
@@ -44,11 +75,26 @@
           "checkedAt": "2026-10-17",
           "note": "官方要求 OpenCode >= v1.18.30。整套配置都在 OpenCode 自己的界面里点几步完成 —— 本工具不写它的配置文件，也不经手你的 key。",
           "steps": [
-            { "do": "先把 OpenCode 升到最新版", "hint": "官方要求 >= v1.18.30，版本太低可能没有 /connect", "code": "opencode upgrade" },
-            { "do": "在项目目录里启动 OpenCode", "code": "opencode" },
-            { "do": "在输入框里输入 /connect，然后输入 deepseek 并选中这个供应商", "code": "/connect" },
-            { "do": "填入你的 DeepSeek API Key", "hint": "用上面「创建 API Key」领一把；本工具不保存它" },
-            { "do": "选择 DeepSeek-V4-Flash 模型" }
+            {
+              "do": "先把 OpenCode 升到最新版",
+              "hint": "官方要求 >= v1.18.30，版本太低可能没有 /connect",
+              "code": "opencode upgrade"
+            },
+            {
+              "do": "在项目目录里启动 OpenCode",
+              "code": "opencode"
+            },
+            {
+              "do": "在输入框里输入 /connect，然后输入 deepseek 并选中这个供应商",
+              "code": "/connect"
+            },
+            {
+              "do": "填入你的 DeepSeek API Key",
+              "hint": "用上面「创建 API Key」领一把；本工具不保存它"
+            },
+            {
+              "do": "选择 DeepSeek-V4-Flash 模型"
+            }
           ]
         },
         "codex": {
@@ -58,152 +104,369 @@
           "checkedAt": "2026-10-17",
           "note": "官方给的是「一键配置脚本」：先备份 ~/.codex/config.toml 到 ~/.codex/backup-deepseek/，再校验语法，校验不过就中止、一个文件都不改。本工具不跑那个脚本，也不经手你的 key。内置联网搜索只在 deepseek-v4-pro 下可用：脚本会写 web_search = \"disabled\"，要开就改成 \"live\" 再重启。",
           "steps": [
-            { "do": "先让 %USERPROFILE%\\.codex 目录存在", "hint": "脚本要求 Codex CLI 或 ChatGPT 桌面端已经装好、并至少跑过一次，否则那个目录还没有" },
-            { "do": "在 PowerShell 里运行 DeepSeek 官方的一键配置脚本", "hint": "这行是从官方文档原样抄的；它会写 ~/.codex/models.json 与 ~/.codex/config.toml", "code": "irm https://cdn.deepseek.com/api-docs/codex-deepseek-setup.ps1 | iex" },
-            { "do": "按菜单选 1 或 2", "hint": "1 = deepseek-flash（同时支持图片输入）；2 = deepseek-v4-pro；9 = 删掉 DeepSeek 配置、还原成默认" },
-            { "do": "首次运行会提示输入 API Key", "hint": "以 sk- 开头，用上面「创建 API Key」领一把；key 会写进你自己的 config.toml，本工具不保存它" },
-            { "do": "在项目目录里启动 Codex 验证", "hint": "启动信息里显示 model: deepseek-flash 就是生效了", "code": "codex" }
+            {
+              "do": "先让 %USERPROFILE%\\.codex 目录存在",
+              "hint": "脚本要求 Codex CLI 或 ChatGPT 桌面端已经装好、并至少跑过一次，否则那个目录还没有"
+            },
+            {
+              "do": "在 PowerShell 里运行 DeepSeek 官方的一键配置脚本",
+              "hint": "这行是从官方文档原样抄的；它会写 ~/.codex/models.json 与 ~/.codex/config.toml",
+              "code": "irm https://cdn.deepseek.com/api-docs/codex-deepseek-setup.ps1 | iex"
+            },
+            {
+              "do": "按菜单选 1 或 2",
+              "hint": "1 = deepseek-flash（同时支持图片输入）；2 = deepseek-v4-pro；9 = 删掉 DeepSeek 配置、还原成默认"
+            },
+            {
+              "do": "首次运行会提示输入 API Key",
+              "hint": "以 sk- 开头，用上面「创建 API Key」领一把；key 会写进你自己的 config.toml，本工具不保存它"
+            },
+            {
+              "do": "在项目目录里启动 Codex 验证",
+              "hint": "启动信息里显示 model: deepseek-flash 就是生效了",
+              "code": "codex"
+            }
           ]
         }
       },
-      "models": ["deepseek-flash[1m]", "deepseek-flash"],
-      "modelsNote": "2026-10-17 按 DeepSeek 官方 Claude Code 接入文档校正（旧清单里的 deepseek-chat / deepseek-reasoner 已过时）。官方在 HAIKU/SUBAGENT 两个位置用的是不带 [1m] 的 deepseek-flash。"
+      "models": [
+        "deepseek-flash[1m]",
+        "deepseek-flash"
+      ],
+      "modelsNote": "2026-10-17 按 DeepSeek 官方 Claude Code 接入文档校正（旧清单里的 deepseek-chat / deepseek-reasoner 已过时）。官方在 HAIKU/SUBAGENT 两个位置用的是不带 [1m] 的 deepseek-flash。",
+      "pricing": {
+        "currency": "CNY",
+        "unit": "每百万 tokens",
+        "checkedAt": "2026-10-29",
+        "sourceUrl": "https://api-docs.deepseek.com/zh-cn/quick_start/pricing",
+        "rows": [
+          {
+            "model": "deepseek-flash",
+            "input": 2,
+            "output": 8,
+            "cachedInput": 0.04,
+            "note": "高峰价；空闲时段 输入 1 / 输出 4 / 缓存 0.02"
+          },
+          {
+            "model": "deepseek-v4-pro",
+            "input": 9,
+            "output": 27,
+            "cachedInput": 0.3,
+            "note": "高峰价；空闲时段 输入 4.5 / 输出 13.5 / 缓存 0.15"
+          }
+        ],
+        "note": "双档价格：工作日上午与下午为高峰价，其余时段（含周末与法定节假日）为半价。下表列高峰价。",
+        "disclaimer": "价格由各渠道官网页面抄录，随时可能调整；本页只列事实，不构成比价或选购建议。"
+      }
     },
     {
       "id": "zhipu",
       "name": "智谱 AI · GLM",
       "region": "cn",
-      "tags": ["国内直连", "有免费模型"],
+      "tags": [
+        "国内直连",
+        "有免费模型"
+      ],
       "registerUrl": "https://open.bigmodel.cn/",
       "keyUrl": "https://open.bigmodel.cn/usercenter/apikeys",
       "docsUrl": "https://docs.bigmodel.cn/",
       "anthropicBaseUrl": "https://open.bigmodel.cn/api/anthropic",
       "openaiBaseUrl": "https://open.bigmodel.cn/api/paas/v4",
-      "models": ["glm-4.6", "glm-4.5-air"],
+      "models": [
+        "glm-4.6",
+        "glm-4.5-air"
+      ],
       "freeQuota": "部分模型提供免费额度，以官网为准",
       "needsRealName": true,
       "needsCreditCard": false,
       "verified": false,
-      "notes": "官方对 Claude Code 接入有专门文档。"
+      "notes": "官方对 Claude Code 接入有专门文档。",
+      "pricing": {
+        "currency": "CNY",
+        "unit": "每百万 tokens",
+        "checkedAt": "2026-10-29",
+        "sourceUrl": "https://open.bigmodel.cn/pricing",
+        "rows": [
+          {
+            "model": "glm-5.3",
+            "input": 8,
+            "output": 28,
+            "cachedInput": 2
+          },
+          {
+            "model": "glm-5.3-flash",
+            "input": 0.8,
+            "output": 2.8,
+            "cachedInput": 0.23
+          }
+        ],
+        "note": "官网价格页当前只列到 GLM-5.3 系列；本站登记的 glm-4.6 / glm-4.5-air 在该页未列出价格，所以下表给在售旗舰。",
+        "disclaimer": "价格由各渠道官网页面抄录，随时可能调整；本页只列事实，不构成比价或选购建议。"
+      }
     },
     {
       "id": "moonshot",
       "name": "Moonshot AI · Kimi",
       "region": "cn",
-      "tags": ["国内直连", "长上下文"],
+      "tags": [
+        "国内直连",
+        "长上下文"
+      ],
       "registerUrl": "https://platform.moonshot.cn/",
       "keyUrl": "https://platform.moonshot.cn/console/api-keys",
       "docsUrl": "https://platform.moonshot.cn/docs/",
       "anthropicBaseUrl": "https://api.moonshot.cn/anthropic",
       "openaiBaseUrl": "https://api.moonshot.cn/v1",
-      "models": ["kimi-k2-turbo-preview"],
+      "models": [
+        "kimi-k2-turbo-preview"
+      ],
       "freeQuota": "以官网为准",
       "needsRealName": true,
       "needsCreditCard": false,
       "verified": false,
-      "notes": ""
+      "notes": "",
+      "pricing": {
+        "currency": "CNY",
+        "unit": "每百万 tokens",
+        "checkedAt": "2026-10-29",
+        "sourceUrl": "https://platform.kimi.com/docs/pricing/chat",
+        "rows": [
+          {
+            "model": "kimi-k2.7-code",
+            "input": 6.5,
+            "output": 27,
+            "cachedInput": 1.3
+          },
+          {
+            "model": "kimi-k2.6",
+            "input": 6.5,
+            "output": 27,
+            "cachedInput": 1.1
+          }
+        ],
+        "note": "K2 系列自 2026-10-31 起停止向新注册用户开放，计划 12 月底全部下线；本站登记的 kimi-k2-turbo-preview 属于 K2 系列，建议改用 K2.7 Code。",
+        "disclaimer": "价格由各渠道官网页面抄录，随时可能调整；本页只列事实，不构成比价或选购建议。"
+      }
     },
     {
       "id": "bailian",
       "name": "阿里云百炼（通义千问）",
       "region": "cn",
-      "tags": ["国内直连", "大厂", "免费额度多"],
+      "tags": [
+        "国内直连",
+        "大厂",
+        "免费额度多"
+      ],
       "registerUrl": "https://bailian.console.aliyun.com/",
       "keyUrl": "https://bailian.console.aliyun.com/?apiKey=1",
       "docsUrl": "https://help.aliyun.com/zh/model-studio/",
       "anthropicBaseUrl": "https://dashscope.aliyuncs.com/api/v2/apps/claude-code-proxy",
       "openaiBaseUrl": "https://dashscope.aliyuncs.com/compatible-mode/v1",
-      "models": ["qwen3-coder-plus", "qwen-max"],
+      "models": [
+        "qwen3-coder-plus",
+        "qwen-max"
+      ],
       "freeQuota": "新用户各模型有免费 token 额度，以控制台为准",
       "needsRealName": true,
       "needsCreditCard": false,
       "verified": false,
-      "notes": "需实名认证。Anthropic 兼容端点路径较长，写入前必须实测。"
+      "notes": "需实名认证。Anthropic 兼容端点路径较长，写入前必须实测。",
+      "pricing": {
+        "currency": "CNY",
+        "unit": "每百万 tokens",
+        "checkedAt": "2026-10-29",
+        "sourceUrl": "https://help.aliyun.com/zh/model-studio/models",
+        "unavailable": "阿里云百炼的价格是按模型逐个列的动态表格（上百个模型、分地域与阶梯），本次没有逐个核对，所以不抄数字。以官网模型列表里的\"计费\"一栏为准。",
+        "disclaimer": "价格由各渠道官网页面抄录，随时可能调整；本页只列事实，不构成比价或选购建议。"
+      }
     },
     {
       "id": "siliconflow",
       "name": "硅基流动 SiliconFlow",
       "region": "cn",
-      "tags": ["国内直连", "模型多", "聚合"],
+      "tags": [
+        "国内直连",
+        "模型多",
+        "聚合"
+      ],
       "registerUrl": "https://cloud.siliconflow.cn/",
       "keyUrl": "https://cloud.siliconflow.cn/account/ak",
       "docsUrl": "https://docs.siliconflow.cn/",
       "anthropicBaseUrl": null,
       "openaiBaseUrl": "https://api.siliconflow.cn/v1",
-      "models": ["deepseek-ai/DeepSeek-V3", "Qwen/Qwen3-Coder-480B-A35B-Instruct"],
+      "models": [
+        "deepseek-ai/DeepSeek-V3",
+        "Qwen/Qwen3-Coder-480B-A35B-Instruct"
+      ],
       "freeQuota": "部分小模型免费，以官网为准",
       "needsRealName": true,
       "needsCreditCard": false,
       "verified": false,
-      "notes": "主要提供 OpenAI 兼容端点，适合 Codex / OpenCode 这类工具。"
+      "notes": "主要提供 OpenAI 兼容端点，适合 Codex / OpenCode 这类工具。",
+      "pricing": {
+        "currency": "CNY",
+        "unit": "每百万 tokens",
+        "checkedAt": "2026-10-29",
+        "sourceUrl": "https://www.siliconflow.cn/pricing",
+        "rows": [
+          {
+            "model": "DeepSeek-V3.2",
+            "input": 4,
+            "output": 6,
+            "cachedInput": 0.4
+          },
+          {
+            "model": "Qwen3.6-27B",
+            "input": 3,
+            "output": 18
+          },
+          {
+            "model": "GLM-4.5-Air",
+            "input": 1,
+            "output": 6
+          }
+        ],
+        "note": "模型名以官网在售列表为准；本站登记的两个模型名（deepseek-ai/DeepSeek-V3、Qwen/Qwen3-Coder-480B-A35B-Instruct）在价格页已换成新版本，下表给当前同类在售价。",
+        "disclaimer": "价格由各渠道官网页面抄录，随时可能调整；本页只列事实，不构成比价或选购建议。"
+      }
     },
     {
       "id": "volcengine",
       "name": "火山方舟（豆包）",
       "region": "cn",
-      "tags": ["国内直连", "大厂"],
+      "tags": [
+        "国内直连",
+        "大厂"
+      ],
       "registerUrl": "https://console.volcengine.com/ark",
       "keyUrl": "https://console.volcengine.com/ark/region:ark+cn-beijing/apiKey",
       "docsUrl": "https://www.volcengine.com/docs/82379",
       "anthropicBaseUrl": null,
       "openaiBaseUrl": "https://ark.cn-beijing.volces.com/api/v3",
-      "models": ["doubao-seed-code-preview"],
+      "models": [
+        "doubao-seed-code-preview"
+      ],
       "freeQuota": "新用户有赠送额度，以控制台为准",
       "needsRealName": true,
       "needsCreditCard": false,
       "verified": false,
-      "notes": ""
+      "notes": "",
+      "pricing": {
+        "currency": "CNY",
+        "unit": "每百万 tokens",
+        "checkedAt": "2026-10-29",
+        "sourceUrl": "https://www.volcengine.com/docs/82379/1099320",
+        "unavailable": "火山方舟的价格按模型与规格分档（含包周期与按量两种），文档页结构复杂，本次没有逐个核对，所以不抄数字。以控制台的计费说明为准。",
+        "disclaimer": "价格由各渠道官网页面抄录，随时可能调整；本页只列事实，不构成比价或选购建议。"
+      }
     },
     {
       "id": "minimax",
       "name": "MiniMax",
       "region": "cn",
-      "tags": ["国内直连"],
+      "tags": [
+        "国内直连"
+      ],
       "registerUrl": "https://platform.minimaxi.com/",
       "keyUrl": "https://platform.minimaxi.com/user-center/basic-information/interface-key",
       "docsUrl": "https://platform.minimaxi.com/document/",
       "anthropicBaseUrl": null,
       "openaiBaseUrl": "https://api.minimaxi.com/v1",
-      "models": ["MiniMax-M2"],
+      "models": [
+        "MiniMax-M2"
+      ],
       "freeQuota": "以官网为准",
       "needsRealName": true,
       "needsCreditCard": false,
       "verified": false,
-      "notes": ""
+      "notes": "",
+      "pricing": {
+        "currency": "CNY",
+        "unit": "每百万 tokens",
+        "checkedAt": "2026-10-29",
+        "sourceUrl": "https://platform.minimax.cn/docs/pricing/overview",
+        "rows": [
+          {
+            "model": "MiniMax-M3.1-Flash",
+            "input": 1,
+            "output": 4,
+            "cachedInput": 0.1
+          },
+          {
+            "model": "MiniMax-M3",
+            "input": 2.1,
+            "output": 8.4,
+            "cachedInput": 0.42,
+            "note": "≤512K 输入的原价 4.2 / 16.8 / 0.84，五折后如下所示"
+          }
+        ],
+        "note": "M3 限时五折（下表为折后价）；本站登记的 MiniMax-M2 在该页未列出，给当前在售型号。",
+        "disclaimer": "价格由各渠道官网页面抄录，随时可能调整；本页只列事实，不构成比价或选购建议。"
+      }
     },
     {
       "id": "openrouter",
       "name": "OpenRouter",
       "region": "global",
-      "tags": ["海外", "模型最全", "一个 key 通用"],
+      "tags": [
+        "海外",
+        "模型最全",
+        "一个 key 通用"
+      ],
       "registerUrl": "https://openrouter.ai/",
       "keyUrl": "https://openrouter.ai/keys",
       "docsUrl": "https://openrouter.ai/docs",
       "anthropicBaseUrl": null,
       "openaiBaseUrl": "https://openrouter.ai/api/v1",
-      "models": ["anthropic/claude-sonnet-4.5", "deepseek/deepseek-chat"],
+      "models": [
+        "anthropic/claude-sonnet-4.5",
+        "deepseek/deepseek-chat"
+      ],
       "freeQuota": "有免费模型，以官网为准",
       "needsRealName": false,
       "needsCreditCard": true,
       "verified": false,
-      "notes": "需要能访问境外网络，且需要信用卡充值。"
+      "notes": "需要能访问境外网络，且需要信用卡充值。",
+      "pricing": {
+        "currency": "USD",
+        "unit": "每百万 tokens",
+        "checkedAt": "2026-10-29",
+        "sourceUrl": "https://openrouter.ai/models",
+        "unavailable": "OpenRouter 是聚合器：400 多个模型各自定价、还可能有多个上游供应商报价，不存在\"一个渠道一个价\"，所以这里不抄单值。点上面的链接按模型查。",
+        "disclaimer": "价格由各渠道官网页面抄录，随时可能调整；本页只列事实，不构成比价或选购建议。"
+      }
     },
     {
       "id": "anthropic",
       "name": "Anthropic 官方",
       "region": "global",
-      "tags": ["官方", "需境外网络"],
+      "tags": [
+        "官方",
+        "需境外网络"
+      ],
       "registerUrl": "https://console.anthropic.com/",
       "keyUrl": "https://console.anthropic.com/settings/keys",
       "docsUrl": "https://code.claude.com/docs/en/setup",
       "anthropicBaseUrl": "https://api.anthropic.com",
       "openaiBaseUrl": null,
-      "models": ["claude-sonnet-4-5", "claude-opus-4-1"],
+      "models": [
+        "claude-sonnet-4-5",
+        "claude-opus-4-1"
+      ],
       "freeQuota": "无免费额度，需绑卡",
       "needsRealName": false,
       "needsCreditCard": true,
       "verified": true,
-      "notes": "需要境外网络与信用卡。国内用户通常选前几个渠道。"
+      "notes": "需要境外网络与信用卡。国内用户通常选前几个渠道。",
+      "pricing": {
+        "currency": "USD",
+        "unit": "每百万 tokens",
+        "checkedAt": "2026-10-29",
+        "sourceUrl": "https://www.anthropic.com/pricing",
+        "unavailable": "官方 API 价格页在当前网络被区域限制，未能核实到具体数字，所以不填。以官网 pricing 页为准。",
+        "disclaimer": "价格由各渠道官网页面抄录，随时可能调整；本页只列事实，不构成比价或选购建议。"
+      }
     }
-  ]
+  ],
+  "_pricingNote": "每个渠道的 pricing 段：currency（CNY/USD 分开标，不换算汇率）、unit（统一每百万 tokens）、checkedAt（抄录日期）、sourceUrl（核对来源）。有 rows 才是核实过的价格；只有 unavailable 表示\"这次没核实到\"，不要用旧数字凑。"
 }

@@ -1222,6 +1222,52 @@ $hw = Get-Content (Join-Path $ProjectRoot 'src\ps\LLMKit.Hardware.psm1') -Raw -E
 Assert-True ($hw -match 'Unload-LLMKitOllamaModel -Tag') '删除流程里真的先调了卸载'
 Assert-True ($hw -match 'HTTP '' \+ \$code') '删除失败时会把 HTTP 状态码带进错误信息'
 Assert-True ($hw -match 'ollama rm') '接口删除失败后有 ollama rm 兜底'
+# ======================================================================
+Write-Host ''
+Write-Host '渠道参考价格（只列抄录到的事实）' -ForegroundColor Cyan
+# ======================================================================
+# 价格这类内容最容易变成"过期误导"。所以钉三件事：
+#   1. 每个渠道都要有 pricing 段，且必须带 checkedAt 与 sourceUrl（没来源的数字不许进库）
+#   2. 有 rows 就必须每行有模型名与正数输入/输出价
+#   3. 没有 rows 就必须给 unavailable 说明原因（不许留空，空着等于悄悄没了）
+$provDoc = Get-Content (Join-Path $projectRoot 'config\providers.json') -Raw -Encoding UTF8 | ConvertFrom-Json
+$priceCurrencies = @('CNY', 'USD')
+$withRows = 0
+$withoutRows = 0
+foreach ($p in @($provDoc.providers)) {
+    $pr = $p.pricing
+    Assert-True ($null -ne $pr) ($p.id + ' 有 pricing 段')
+    if ($null -eq $pr) { continue }
+    Assert-True ($priceCurrencies -contains [string]$pr.currency) ($p.id + ' 的币种在 CNY/USD 里（实际 ' + [string]$pr.currency + '）')
+    Assert-True ((Test-Path -LiteralPath (Join-Path $projectRoot 'config\providers.json')) -and ([string]$pr.checkedAt -match '^\d{4}-\d{2}-\d{2}$')) ($p.id + ' 有抄录日期 checkedAt')
+    Assert-True ([string]$pr.sourceUrl).StartsWith('https://') ($p.id + ' 有来源链接 sourceUrl')
+    $rows = @($pr.rows | Where-Object { $_ })
+    if ($rows.Count -gt 0) {
+        $withRows++
+        foreach ($r in $rows) {
+            Assert-True ([string]$r.model).Length -gt 0 ($p.id + ' 的价格行有模型名')
+            Assert-True ([double]$r.input -gt 0) ($p.id + '/' + $r.model + ' 输入价是正数')
+            Assert-True ([double]$r.output -gt 0) ($p.id + '/' + $r.model + ' 输出价是正数')
+        }
+        Assert-True ([string]::IsNullOrWhiteSpace([string]$pr.unavailable)) ($p.id + ' 有价格时不该同时说"未收录"')
+    } else {
+        $withoutRows++
+        Assert-True ([string]$pr.unavailable).Length -gt 10 ($p.id + ' 没有价格时必须说明原因')
+    }
+    Assert-True ([string]$pr.unit) -eq '每百万 tokens' ($p.id + ' 的计价单位统一为每百万 tokens')
+}
+Assert-True ($withRows -ge 3) ('至少 3 个渠道抄到了具体价格（实际 ' + $withRows + '）')
+Assert-True ($withoutRows -ge 1) ('没抄到的渠道要如实标注（实际 ' + $withoutRows + ' 家）')
+# 币种必须分开：至少各有一个渠道落在 CNY / USD
+$cny = @($provDoc.providers | Where-Object { $_.pricing -and $_.pricing.currency -eq 'CNY' })
+$usd = @($provDoc.providers | Where-Object { $_.pricing -and $_.pricing.currency -eq 'USD' })
+Assert-True ($cny.Count -ge 1) '有人民币计价的渠道'
+Assert-True ($usd.Count -ge 1) '有美元计价的渠道'
+# 服务层要把它透传给界面
+$svcProviders = @(Get-LLMKitProviderList -ConfigRoot $svcRoot)
+Assert-Equal $provDoc.providers.Count $svcProviders.Count '服务层返回的渠道数量一致'
+$badPricing = @($svcProviders | Where-Object { $null -eq $_.pricing })
+Assert-Equal 0 $badPricing.Count ('每个渠道都带 pricing（缺的：' + (($badPricing | ForEach-Object { $_.id }) -join '、') + '）')
 Write-Host ('-' * 60) -ForegroundColor DarkGray
 if ($script:Fail -eq 0) {
     Write-Host ('全部通过：' + $script:Pass + ' 项') -ForegroundColor Green

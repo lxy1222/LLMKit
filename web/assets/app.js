@@ -1331,13 +1331,72 @@
         '</div></div>';
     }).join('');
 
+    // 参考价格：按币种分两张表，只列抄录到的数字。
+    // 三条规矩：① 不做汇率换算 ② 不给"谁更便宜"的结论 ③ 没核实到的写"未收录"并说明原因
+    function priceTable(currency) {
+      var rows = [];
+      S.providers.forEach(function (p) {
+        var pr = p.pricing;
+        if (!pr || String(pr.currency || '') !== currency) { return; }
+        (pr.rows || []).forEach(function (r) {
+          rows.push({ provider: p.name, id: p.id, row: r, pr: pr });
+        });
+      });
+      if (!rows.length) { return ''; }
+      var cur = currency === 'CNY' ? '¥' : '$';
+      var body = rows.map(function (x) {
+        return '<tr><td>' + esc(x.provider) + '</td>' +
+          '<td>' + mono(x.row.model) + '</td>' +
+          '<td>' + cur + ' ' + esc(String(x.row.input)) + '</td>' +
+          '<td>' + cur + ' ' + esc(String(x.row.output)) + '</td>' +
+          '<td>' + (x.row.cachedInput === undefined || x.row.cachedInput === null ? '—' : cur + ' ' + esc(String(x.row.cachedInput))) + '</td>' +
+          '<td>' + esc(x.row.note || '') + '</td></tr>';
+      }).join('');
+      var dates = [];
+      rows.forEach(function (x) { if (x.pr.checkedAt && dates.indexOf(x.pr.checkedAt) < 0) { dates.push(x.pr.checkedAt); } });
+      return '<h3>' + (currency === 'CNY' ? '人民币（CNY）' : '美元（USD）') + '</h3>' +
+        '<div class="meta">抄录于 ' + esc(dates.join(' / ')) + '，单位：每百万 tokens。</div>' +
+        '<table class="tbl"><thead><tr><th>渠道</th><th>模型</th><th>输入</th><th>输出</th><th>缓存命中</th><th>备注</th></tr></thead>' +
+        '<tbody>' + body + '</tbody></table>';
+    }
+
+    function priceUnavailable() {
+      var items = S.providers.filter(function (p) { return p.pricing && p.pricing.unavailable; });
+      if (!items.length) { return ''; }
+      var lis = items.map(function (p) {
+        var cur = p.pricing.currency === 'USD' ? '（美元）' : (p.pricing.currency === 'CNY' ? '（人民币）' : '');
+        return '<li><b>' + esc(p.name) + '</b>' + esc(cur) + '：' + esc(p.pricing.unavailable) +
+          (p.pricing.sourceUrl ? ' <a href="' + esc(p.pricing.sourceUrl) + '" target="_blank" rel="noreferrer">官网价格页</a>' : '') + '</li>';
+      }).join('');
+      return '<details><summary>这几家这次没核实到具体数字（未收录 ' + items.length + ' 家）</summary><ul>' + lis + '</ul></details>';
+    }
+
+    var priceSection = (function () {
+      var cny = priceTable('CNY');
+      var usd = priceTable('USD');
+      if (!cny && !usd) { return ''; }
+      var notes = [];
+      S.providers.forEach(function (p) {
+        if (p.pricing && p.pricing.note) { notes.push('<li><b>' + esc(p.name) + '</b>：' + esc(p.pricing.note) + '</li>'); }
+      });
+      return '<section><h2>参考价格</h2>' +
+        '<div class="callout warn"><b>这些价格是从各渠道官网抄录的，随时可能变。</b>' +
+        '本页只列事实，<b>不构成比价或选购建议</b>；也不做汇率换算 —— 人民币与美元分开两张表。' +
+        '下单前请以官网价格页为准。</div>' +
+        cny + usd +
+        (notes.length ? '<details><summary>各家的计价口径与已知变动</summary><ul>' + notes.join('') + '</ul></details>' : '') +
+        priceUnavailable() +
+        '</section>';
+    })();
+
     $('app').innerHTML =
       '<div class="bar"><span class="note">共 ' + S.providers.length + ' 个渠道。' +
       '配置不在这个页面上 —— 每个智能体的配置都不一样，所以都写在各自智能体的页面里。</span></div>' +
       '<div class="callout"><b>本工具不内置、不代发、不代充任何 API Key。</b>' +
       '这里只给各渠道的注册与创建 Key 的入口链接，key 始终由你自己创建和保管。' +
       '写配置时也只需要填"存 key 的环境变量名"，不需要把 key 交给这个工具。</div>' +
-      '<section><h2>渠道</h2><div class="grid">' + (cards || '<div class="card">没有渠道配置</div>') + '</div></section>';
+      '<section><h2>渠道</h2><div class="grid">' + (cards || '<div class="card">没有渠道配置</div>') + '</div></section>' +
+      priceSection;
   }
 
   // ---------------------------------------------------------------- 诊断页
